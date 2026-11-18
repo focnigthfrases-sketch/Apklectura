@@ -1,0 +1,6 @@
+{
+  "name": "Lettor",
+  "description": "Lector elegante de libros EPUB y PDF con biblioteca personal, tipografía editorial, marcadores, búsqueda interna y modos de lectura personalizables.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

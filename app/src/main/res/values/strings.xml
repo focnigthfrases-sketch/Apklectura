@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Lettor</string>
+    <string name="widget_continue_title">Continuar leyendo · Lettor</string>
+    <!-- IDs oficiales de prueba de Google AdMob (reemplazar al publicar) -->
+    <string name="admob_app_id">ca-app-pub-3940256099942544~3347511713</string>
+    <string name="admob_banner_id">ca-app-pub-3940256099942544/9214589741</string>
+    <string name="admob_interstitial_id">ca-app-pub-3940256099942544/1033173712</string>
+    <string name="admob_rewarded_id">ca-app-pub-3940256099942544/5224354917</string>
+</resources>
