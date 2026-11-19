@@ -69,6 +69,17 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+  packaging {
+    resources {
+      excludes += listOf(
+        "META-INF/DEPENDENCIES",
+        "META-INF/LICENSE",
+        "META-INF/LICENSE.txt",
+        "META-INF/NOTICE",
+        "META-INF/NOTICE.txt"
+      )
+    }
+  }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -125,6 +136,7 @@ dependencies {
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.play.services.ads)
   implementation(libs.androidx.work.runtime.ktx)
+  implementation(libs.pdfbox.android)
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   // implementation(libs.okhttp)

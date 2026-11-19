@@ -1,6 +1,10 @@
 package com.readicop.lettor.ui.reader
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
@@ -149,7 +153,8 @@ fun ReaderScreen(
   }
 
   // Per-reader brightness override
-  val activity = LocalContext.current as? Activity
+  val context = LocalContext.current
+  val activity = context as? Activity
   val readerBrightness = uiState.preferences.readerBrightness
   DisposableEffect(activity, readerBrightness) {
     val window = activity?.window
@@ -186,6 +191,36 @@ fun ReaderScreen(
 
   val surfaceColors = uiState.preferences.readerTheme.colors()
   val isBookmarked = uiState.bookmarks.any { it.unitIndex == uiState.currentUnit }
+
+  val copyPlainSelection: (String) -> Unit = { selectedText ->
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("Texto de ${uiState.book?.title.orEmpty()}", selectedText))
+    scope.launch { snackbarHostState.showSnackbar("Texto copiado") }
+  }
+  val copyBookCitation: (String, String) -> Unit = { selectedText, locationLabel ->
+    val citation = formatBookCitation(
+      selectedText = selectedText,
+      bookTitle = uiState.book?.title.orEmpty(),
+      bookAuthor = uiState.book?.author.orEmpty(),
+      locationLabel = locationLabel
+    )
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("Cita de ${uiState.book?.title.orEmpty()}", citation))
+    scope.launch { snackbarHostState.showSnackbar("Cita copiada") }
+  }
+  val shareBookSelection: (String, String) -> Unit = { selectedText, locationLabel ->
+    val citation = formatBookCitation(
+      selectedText = selectedText,
+      bookTitle = uiState.book?.title.orEmpty(),
+      bookAuthor = uiState.book?.author.orEmpty(),
+      locationLabel = locationLabel
+    )
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+      type = "text/plain"
+      putExtra(Intent.EXTRA_TEXT, citation)
+    }
+    context.startActivity(Intent.createChooser(shareIntent, "Compartir cita"))
+  }
 
   Box(
     modifier = modifier
@@ -262,15 +297,19 @@ fun ReaderScreen(
           ttsActiveBlockIndex = if (uiState.ttsState.isPlaying) uiState.ttsState.currentBlockIndex else null,
           isAutoScrolling = uiState.isAutoScrolling,
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
+          topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onRequestImage = viewModel::requestEpubImage,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onLongPressBlock = { blockIdx, excerpt ->
+          onOpenFragmentTools = { blockIdx, excerpt ->
             activeFragment = ActiveFragmentSelection(
               blockIndex = blockIdx,
               text = excerpt,
               spokenIndex = spokenMap[blockIdx]
             )
           },
+          onCopyPlainText = copyPlainSelection,
+          onCopyCitation = copyBookCitation,
+          onShareSelection = shareBookSelection,
           onPositionChanged = { chIdx, subPage, overall ->
             viewModel.onPositionChanged(chIdx, subPage, overall)
           }
@@ -288,14 +327,18 @@ fun ReaderScreen(
           highlights = uiState.highlights,
           isAutoScrolling = uiState.isAutoScrolling,
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
+          topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onLongPressPage = { pageIdx ->
+          onOpenFragmentTools = { pageIdx, excerpt ->
             activeFragment = ActiveFragmentSelection(
               blockIndex = -1,
-              text = "${uiState.book?.title.orEmpty()} · Página ${pageIdx + 1}",
+              text = excerpt.ifBlank { "${uiState.book?.title.orEmpty()} · Página ${pageIdx + 1}" },
               spokenIndex = null
             )
           },
+          onCopyPlainText = copyPlainSelection,
+          onCopyCitation = copyBookCitation,
+          onShareSelection = shareBookSelection,
           onPageChanged = { pageIdx, overall ->
             viewModel.onPositionChanged(pageIdx, 0, overall)
           }

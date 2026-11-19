@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -234,6 +235,7 @@ fun LettorAppNavigation(
           modifier = Modifier
             .fillMaxSize()
             .padding(innerPadding)
+            .consumeWindowInsets(innerPadding)
         )
       }
     }

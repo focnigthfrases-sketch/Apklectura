@@ -222,7 +222,7 @@ class ReaderViewModel(
             saveProgressInternal(book, safeUnit, startSub, session.chapterStubs.size)
           }
           BookFormat.PDF -> {
-            val session = PdfBookSession(file)
+            val session = PdfBookSession(file, appContext)
             pdfSession = session
             val pageCount = session.open()
             if (pageCount <= 0) {

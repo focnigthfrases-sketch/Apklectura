@@ -164,4 +164,107 @@ class ExampleRobolectricTest {
     assertTrue(first === second)
     assertTrue(File(context.cacheDir, "lettor_toucan_badge_v1.png").exists())
   }
+
+  @Test
+  fun `citation formatter produces clean literary quotes for epub and pdf`() {
+    val pdfQuote = com.readicop.lettor.ui.reader.formatBookCitation(
+      selectedText = "  En un lugar   de la Mancha  ",
+      bookTitle = "Don Quijote",
+      bookAuthor = "Miguel de Cervantes",
+      locationLabel = "pág. 12"
+    )
+    assertEquals("«En un lugar de la Mancha» — Don Quijote, Miguel de Cervantes (pág. 12)", pdfQuote)
+
+    val noAuthorQuote = com.readicop.lettor.ui.reader.formatBookCitation(
+      selectedText = "Texto breve",
+      bookTitle = "Antología",
+      bookAuthor = "",
+      locationLabel = "cap. 2, pág. 3"
+    )
+    assertEquals("«Texto breve» — Antología (cap. 2, pág. 3)", noAuthorQuote)
+  }
+
+  @Test
+  fun `epub character selection expands words and extracts multi-block ranges independently of layout`() {
+    val p0 = "En un lugar de la Mancha."
+    val p1 = "De cuyo nombre no quiero acordarme."
+    val blocks = listOf(
+      com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+        androidx.compose.ui.text.AnnotatedString(p0),
+        p0
+      ),
+      com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+        androidx.compose.ui.text.AnnotatedString(p1),
+        p1
+      )
+    )
+
+    val wordRange = com.readicop.lettor.ui.reader.expandWordRangeAtOffset(p0, 7)
+    assertEquals("lugar", p0.substring(wordRange))
+
+    val multiSelection = com.readicop.lettor.ui.reader.EpubTextSelection(
+      chapterIndex = 0,
+      anchorA = com.readicop.lettor.ui.reader.EpubCharPosition(1, 7),
+      anchorB = com.readicop.lettor.ui.reader.EpubCharPosition(0, 6)
+    )
+    val extracted = com.readicop.lettor.ui.reader.extractSelectedEpubText(blocks, multiSelection)
+    assertEquals("lugar de la Mancha.\n\nDe cuyo", extracted)
+  }
+
+  @Test
+  fun `pdf engine extracts normalized words for digital pdf and detects scanned image-only pdf`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    com.readicop.lettor.domain.engine.PdfBookSession.ensurePdfBoxInitialized(context)
+
+    val digitalPdf = File(context.cacheDir, "test_digital.pdf")
+    com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
+      val page = com.tom_roush.pdfbox.pdmodel.PDPage()
+      doc.addPage(page)
+      com.tom_roush.pdfbox.pdmodel.PDPageContentStream(doc, page).use { cs ->
+        cs.beginText()
+        cs.setFont(com.tom_roush.pdfbox.pdmodel.font.PDType1Font.HELVETICA, 14f)
+        cs.newLineAtOffset(72f, 700f)
+        cs.showText("Lettor lectura digital")
+        cs.endText()
+      }
+      doc.save(digitalPdf)
+    }
+
+    val digitalData = com.tom_roush.pdfbox.pdmodel.PDDocument.load(digitalPdf).use { doc ->
+      com.readicop.lettor.domain.engine.PdfBookSession.extractWordsFromPdPage(doc, 0)
+    }
+    assertFalse(digitalData.isScanned)
+    assertEquals(listOf("Lettor", "lectura", "digital"), digitalData.words.map { it.text })
+    digitalData.words.forEach { w ->
+      assertTrue(w.rect.left in 0f..1f && w.rect.right in 0f..1f)
+      assertTrue(w.rect.top in 0f..1f && w.rect.bottom in 0f..1f)
+      assertTrue(w.rect.right > w.rect.left)
+      assertTrue(w.rect.bottom > w.rect.top)
+    }
+    val selectedPdfText = com.readicop.lettor.ui.reader.extractSelectedPdfText(
+      digitalData.words,
+      com.readicop.lettor.ui.reader.PdfWordSelection(pageIndex = 0, anchorWordA = 2, anchorWordB = 0)
+    )
+    assertEquals("Lettor lectura digital", selectedPdfText)
+
+    val scannedPdf = File(context.cacheDir, "test_scanned.pdf")
+    com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
+      val page = com.tom_roush.pdfbox.pdmodel.PDPage()
+      doc.addPage(page)
+      com.tom_roush.pdfbox.pdmodel.PDPageContentStream(doc, page).use { cs ->
+        cs.addRect(50f, 50f, 200f, 200f)
+        cs.fill()
+      }
+      doc.save(scannedPdf)
+    }
+
+    val scannedData = com.tom_roush.pdfbox.pdmodel.PDDocument.load(scannedPdf).use { doc ->
+      com.readicop.lettor.domain.engine.PdfBookSession.extractWordsFromPdPage(doc, 0)
+    }
+    assertTrue(scannedData.isScanned)
+    assertTrue(scannedData.words.isEmpty())
+
+    digitalPdf.delete()
+    scannedPdf.delete()
+  }
 }

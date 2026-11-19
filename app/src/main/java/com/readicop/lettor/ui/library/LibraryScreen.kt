@@ -21,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -70,9 +71,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -104,11 +106,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.readicop.lettor.R
@@ -192,27 +196,7 @@ fun LibraryScreen(
   }
 
   Scaffold(
-    modifier = modifier.fillMaxSize(),
-    snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-    floatingActionButton = {
-      ExtendedFloatingActionButton(
-        onClick = launchPicker,
-        icon = {
-          if (uiState.isImporting) {
-            CircularProgressIndicator(
-              modifier = Modifier.size(20.dp),
-              strokeWidth = 2.dp
-            )
-          } else {
-            Icon(Icons.Default.Add, contentDescription = null)
-          }
-        },
-        text = { Text(if (uiState.isImporting) "Importando…" else "Importar libros") },
-        containerColor = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        modifier = Modifier.testTag("import_book_fab")
-      )
-    }
+    modifier = modifier.fillMaxSize()
   ) { innerPadding ->
     Column(
       modifier = Modifier
@@ -517,99 +501,146 @@ fun LibraryScreen(
         }
       }
 
-      if (uiState.isLoading) {
-        Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-          CircularProgressIndicator()
-        }
-      } else if (uiState.filteredBooks.isEmpty()) {
-        EmptyLibraryState(
-          hasAnyBooks = uiState.allBooks.isNotEmpty(),
-          onImportClick = launchPicker,
-          onClearFilters = viewModel::clearAllFilters,
-          modifier = Modifier.weight(1f)
-        )
-      } else {
-        val showHero = uiState.continueReadingBook != null &&
-          uiState.filter == LibraryFilter.ALL &&
-          uiState.selectedAuthor == null &&
-          uiState.selectedGenre == null &&
-          uiState.searchQuery.isBlank()
+      Box(
+        modifier = Modifier
+          .weight(1f)
+          .fillMaxWidth()
+      ) {
+        if (uiState.isLoading) {
+          Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+          }
+        } else if (uiState.filteredBooks.isEmpty()) {
+          EmptyLibraryState(
+            hasAnyBooks = uiState.allBooks.isNotEmpty(),
+            onImportClick = launchPicker,
+            onClearFilters = viewModel::clearAllFilters,
+            modifier = Modifier.fillMaxSize()
+          )
+        } else {
+          val showHero = uiState.continueReadingBook != null &&
+            uiState.filter == LibraryFilter.ALL &&
+            uiState.selectedAuthor == null &&
+            uiState.selectedGenre == null &&
+            uiState.searchQuery.isBlank()
 
-        if (uiState.isGridView) {
-          LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 152.dp),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 92.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            modifier = Modifier.weight(1f)
-          ) {
-            if (showHero && uiState.continueReadingBook != null) {
-              item(span = { GridItemSpan(maxLineSpan) }) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                  DailyReadingGoalBanner(
-                    todaySeconds = uiState.preferences.todayReadingSeconds,
-                    goalMinutes = uiState.preferences.dailyGoalMinutes,
-                    streakDays = uiState.preferences.readingStreakDays,
-                    onSelectGoal = viewModel::setDailyGoalMinutes
-                  )
-                  ContinueReadingHeroCard(
-                    book = uiState.continueReadingBook!!,
-                    wpm = uiState.preferences.estimatedWpm,
-                    onClick = { onOpenBook(uiState.continueReadingBook!!.id) }
+          if (uiState.isGridView) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+              val gridColumns = if (maxWidth < 600.dp) {
+                GridCells.Fixed(3)
+              } else {
+                GridCells.Adaptive(minSize = 136.dp)
+              }
+              LazyVerticalGrid(
+                columns = gridColumns,
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 76.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxSize()
+              ) {
+                if (showHero && uiState.continueReadingBook != null) {
+                  item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                      DailyReadingGoalBanner(
+                        todaySeconds = uiState.preferences.todayReadingSeconds,
+                        goalMinutes = uiState.preferences.dailyGoalMinutes,
+                        streakDays = uiState.preferences.readingStreakDays,
+                        onSelectGoal = viewModel::setDailyGoalMinutes
+                      )
+                      ContinueReadingHeroCard(
+                        book = uiState.continueReadingBook!!,
+                        wpm = uiState.preferences.estimatedWpm,
+                        onClick = { onOpenBook(uiState.continueReadingBook!!.id) }
+                      )
+                    }
+                  }
+                }
+
+                items(uiState.filteredBooks, key = { it.id }) { book ->
+                  BookGridCard(
+                    book = book,
+                    onClick = { onOpenBook(book.id) },
+                    onMenuClick = { selectedBookForSheet = book },
+                    onFavoriteToggle = { viewModel.toggleFavorite(book) }
                   )
                 }
               }
             }
+          } else {
+            LazyColumn(
+              contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 76.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+              modifier = Modifier.fillMaxSize()
+            ) {
+              if (showHero && uiState.continueReadingBook != null) {
+                item(key = "hero_goal") {
+                  Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DailyReadingGoalBanner(
+                      todaySeconds = uiState.preferences.todayReadingSeconds,
+                      goalMinutes = uiState.preferences.dailyGoalMinutes,
+                      streakDays = uiState.preferences.readingStreakDays,
+                      onSelectGoal = viewModel::setDailyGoalMinutes
+                    )
+                    ContinueReadingHeroCard(
+                      book = uiState.continueReadingBook!!,
+                      wpm = uiState.preferences.estimatedWpm,
+                      onClick = { onOpenBook(uiState.continueReadingBook!!.id) }
+                    )
+                  }
+                  Spacer(Modifier.height(4.dp))
+                }
+              }
 
-            items(uiState.filteredBooks, key = { it.id }) { book ->
-              BookGridCard(
-                book = book,
-                wpm = uiState.preferences.estimatedWpm,
-                onClick = { onOpenBook(book.id) },
-                onMenuClick = { selectedBookForSheet = book },
-                onFavoriteToggle = { viewModel.toggleFavorite(book) }
-              )
+              items(uiState.filteredBooks, key = { it.id }) { book ->
+                BookListRowCard(
+                  book = book,
+                  wpm = uiState.preferences.estimatedWpm,
+                  onClick = { onOpenBook(book.id) },
+                  onMenuClick = { selectedBookForSheet = book },
+                  onFavoriteToggle = { viewModel.toggleFavorite(book) }
+                )
+              }
             }
           }
-        } else {
-          LazyColumn(
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 92.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.weight(1f)
-          ) {
-            if (showHero && uiState.continueReadingBook != null) {
-              item(key = "hero_goal") {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                  DailyReadingGoalBanner(
-                    todaySeconds = uiState.preferences.todayReadingSeconds,
-                    goalMinutes = uiState.preferences.dailyGoalMinutes,
-                    streakDays = uiState.preferences.readingStreakDays,
-                    onSelectGoal = viewModel::setDailyGoalMinutes
-                  )
-                  ContinueReadingHeroCard(
-                    book = uiState.continueReadingBook!!,
-                    wpm = uiState.preferences.estimatedWpm,
-                    onClick = { onOpenBook(uiState.continueReadingBook!!.id) }
-                  )
-                }
-                Spacer(Modifier.height(4.dp))
-              }
-            }
+        }
 
-            items(uiState.filteredBooks, key = { it.id }) { book ->
-              BookListRowCard(
-                book = book,
-                wpm = uiState.preferences.estimatedWpm,
-                onClick = { onOpenBook(book.id) },
-                onMenuClick = { selectedBookForSheet = book },
-                onFavoriteToggle = { viewModel.toggleFavorite(book) }
-              )
-            }
+        SnackbarHost(
+          hostState = snackbarHostState,
+          modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(bottom = 8.dp)
+        )
+
+        // Compact + button placed directly above the AdMob banner (never overlapping it)
+        FloatingActionButton(
+          onClick = launchPicker,
+          shape = CircleShape,
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary,
+          elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+          modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(end = 16.dp, bottom = 12.dp)
+            .size(48.dp)
+            .testTag("import_book_fab")
+        ) {
+          if (uiState.isImporting) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(22.dp),
+              strokeWidth = 2.5.dp,
+              color = MaterialTheme.colorScheme.onPrimary
+            )
+          } else {
+            Icon(
+              imageVector = Icons.Default.Add,
+              contentDescription = "Importar libros",
+              modifier = Modifier.size(32.dp)
+            )
           }
         }
       }
 
-      // Adaptive AdMob Banner ONLY on Library screen (never in Reader)
+      // Adaptive AdMob Banner flush at the bottom right above the NavigationBar
       LibraryAdaptiveBanner(
         modifier = Modifier
           .fillMaxWidth()
@@ -906,7 +937,7 @@ private fun ContinueReadingHeroCard(
 
   ElevatedCard(
     onClick = onClick,
-    shape = RoundedCornerShape(20.dp),
+    shape = RoundedCornerShape(16.dp),
     colors = CardDefaults.elevatedCardColors(
       containerColor = MaterialTheme.colorScheme.surfaceContainerLow
     ),
@@ -926,7 +957,7 @@ private fun ContinueReadingHeroCard(
             )
           )
         )
-        .padding(16.dp)
+        .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
       Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -934,24 +965,40 @@ private fun ContinueReadingHeroCard(
       ) {
         BookCoverArt(
           book = book,
-          modifier = Modifier.width(88.dp),
-          showFormatBadge = true
+          modifier = Modifier.width(50.dp),
+          showFormatBadge = false
         )
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = "CONTINUAR LEYENDO",
-            style = MaterialTheme.typography.labelSmall.copy(
-              fontFamily = JetBrainsMonoFamily,
-              fontWeight = FontWeight.Bold
-            ),
-            color = MaterialTheme.colorScheme.primary
-          )
-          Spacer(Modifier.height(4.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = "CONTINUAR LEYENDO",
+              style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = JetBrainsMonoFamily,
+                fontWeight = FontWeight.Bold
+              ),
+              color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+              text = if (book.isFinished) "Completado" else "$unitLabel · ~$remainingMin min",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+          Spacer(Modifier.height(2.dp))
           Text(
             text = book.title,
-            style = MaterialTheme.typography.headlineSmall.copy(fontFamily = PlayfairDisplayFamily),
-            maxLines = 2,
+            style = MaterialTheme.typography.titleMedium.copy(
+              fontFamily = PlayfairDisplayFamily,
+              fontWeight = FontWeight.SemiBold
+            ),
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
           Text(
@@ -961,35 +1008,29 @@ private fun ContinueReadingHeroCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
           )
-          Spacer(Modifier.height(10.dp))
-          LinearProgressIndicator(
-            progress = { book.progressFraction.coerceIn(0.02f, 1f) },
-            modifier = Modifier
-              .fillMaxWidth()
-              .height(6.dp)
-              .clip(RoundedCornerShape(3.dp)),
-            trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-          )
           Spacer(Modifier.height(6.dp))
           Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
           ) {
-            Text(
-              text = if (book.isFinished) "Completado" else "$unitLabel · ~$remainingMin min",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant
+            LinearProgressIndicator(
+              progress = { book.progressFraction.coerceIn(0.02f, 1f) },
+              modifier = Modifier
+                .weight(1f)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp)),
+              trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
             )
             Surface(
               color = MaterialTheme.colorScheme.primary,
-              shape = RoundedCornerShape(10.dp)
+              shape = RoundedCornerShape(8.dp)
             ) {
               Text(
                 text = "Leer ($percent%)",
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
               )
             }
           }
@@ -1002,96 +1043,126 @@ private fun ContinueReadingHeroCard(
 @Composable
 private fun BookGridCard(
   book: BookEntity,
-  wpm: Int,
   onClick: () -> Unit,
   onMenuClick: () -> Unit,
   onFavoriteToggle: () -> Unit
 ) {
   val percent = (book.progressFraction * 100).roundToInt().coerceIn(0, 100)
-  val remainingMin = LocalBookIntelligence.estimateRemainingMinutes(
-    book.totalWordCount, book.totalUnits, book.progressFraction, wpm
-  )
 
   Column(
     modifier = Modifier
       .fillMaxWidth()
-      .clip(RoundedCornerShape(12.dp))
+      .clip(RoundedCornerShape(10.dp))
       .clickable(onClick = onClick)
       .testTag("book_card_${book.id}")
   ) {
     Box(modifier = Modifier.fillMaxWidth()) {
       BookCoverArt(
         book = book,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        compact = true
       )
 
-      IconButton(
-        onClick = onFavoriteToggle,
+      Box(
+        contentAlignment = Alignment.BottomStart,
         modifier = Modifier
           .align(Alignment.BottomStart)
-          .padding(4.dp)
           .size(36.dp)
-          .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+          .clip(CircleShape)
+          .clickable(
+            role = Role.Button,
+            onClick = onFavoriteToggle
+          )
+          .padding(4.dp)
       ) {
-        Icon(
-          imageVector = if (book.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-          contentDescription = "Favorito",
-          tint = if (book.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-          modifier = Modifier.size(18.dp)
-        )
+        Surface(
+          shape = CircleShape,
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+          tonalElevation = 1.dp,
+          modifier = Modifier.size(22.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = if (book.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+              contentDescription = "Favorito",
+              tint = if (book.isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              modifier = Modifier.size(13.dp)
+            )
+          }
+        }
       }
 
-      IconButton(
-        onClick = onMenuClick,
+      Box(
+        contentAlignment = Alignment.BottomEnd,
         modifier = Modifier
           .align(Alignment.BottomEnd)
-          .padding(4.dp)
           .size(36.dp)
-          .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f), CircleShape)
+          .clip(CircleShape)
+          .clickable(
+            role = Role.Button,
+            onClick = onMenuClick
+          )
+          .padding(4.dp)
           .testTag("book_menu_${book.id}")
       ) {
-        Icon(
-          imageVector = Icons.Default.MoreVert,
-          contentDescription = "Opciones de ${book.title}",
-          modifier = Modifier.size(18.dp)
-        )
+        Surface(
+          shape = CircleShape,
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+          tonalElevation = 1.dp,
+          modifier = Modifier.size(22.dp)
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Default.MoreVert,
+              contentDescription = "Opciones de ${book.title}",
+              modifier = Modifier.size(13.dp)
+            )
+          }
+        }
       }
     }
 
-    Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(6.dp))
 
     Text(
       text = book.title,
-      style = MaterialTheme.typography.titleSmall,
+      style = MaterialTheme.typography.titleSmall.copy(
+        fontSize = 12.5.sp,
+        lineHeight = 16.sp
+      ),
       maxLines = 2,
       overflow = TextOverflow.Ellipsis
     )
     Text(
       text = book.author,
-      style = MaterialTheme.typography.bodySmall,
+      style = MaterialTheme.typography.bodySmall.copy(
+        fontSize = 11.sp,
+        lineHeight = 14.sp
+      ),
       color = MaterialTheme.colorScheme.onSurfaceVariant,
       maxLines = 1,
       overflow = TextOverflow.Ellipsis
     )
 
-    Spacer(Modifier.height(6.dp))
+    Spacer(Modifier.height(5.dp))
 
     Row(
       verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(8.dp)
+      horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
       LinearProgressIndicator(
         progress = { book.progressFraction.coerceIn(0f, 1f) },
         modifier = Modifier
           .weight(1f)
-          .height(4.dp)
+          .height(3.5.dp)
           .clip(RoundedCornerShape(2.dp)),
         trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)
       )
       Text(
-        text = if (book.isFinished) "Leído" else "$percent% · ${remainingMin}m",
-        style = MaterialTheme.typography.labelSmall,
-        color = if (book.isFinished) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+        text = if (book.isFinished) "Leído" else "$percent%",
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+        color = if (book.isFinished) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1
       )
     }
   }

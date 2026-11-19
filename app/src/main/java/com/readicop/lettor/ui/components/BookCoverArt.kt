@@ -50,9 +50,15 @@ private val CoverPalettes = listOf(
 fun BookCoverArt(
   book: BookEntity,
   modifier: Modifier = Modifier,
-  showFormatBadge: Boolean = true
+  showFormatBadge: Boolean = true,
+  compact: Boolean = false
 ) {
-  val shape = RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp, topEnd = 10.dp, bottomEnd = 10.dp)
+  val shape = RoundedCornerShape(
+    topStart = 4.dp,
+    bottomStart = 4.dp,
+    topEnd = if (compact) 8.dp else 10.dp,
+    bottomEnd = if (compact) 8.dp else 10.dp
+  )
   val hasValidCover = book.coverPath != null && File(book.coverPath).exists()
   val palette = CoverPalettes[abs(book.title.hashCode()) % CoverPalettes.size]
 
@@ -75,7 +81,12 @@ fun BookCoverArt(
       Column(
         modifier = Modifier
           .fillMaxSize()
-          .padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+          .padding(
+            start = if (compact) 10.dp else 14.dp,
+            end = if (compact) 8.dp else 10.dp,
+            top = if (compact) 8.dp else 12.dp,
+            bottom = if (compact) 8.dp else 12.dp
+          ),
         verticalArrangement = Arrangement.SpaceBetween
       ) {
         Box(
@@ -90,19 +101,23 @@ fun BookCoverArt(
             style = MaterialTheme.typography.titleMedium.copy(
               fontFamily = PlayfairDisplayFamily,
               fontWeight = FontWeight.Bold,
-              fontSize = 15.sp,
-              lineHeight = 19.sp
+              fontSize = if (compact) 12.sp else 15.sp,
+              lineHeight = if (compact) 15.sp else 19.sp
             ),
             color = palette.second,
-            maxLines = 4,
+            maxLines = if (compact) 3 else 4,
             overflow = TextOverflow.Ellipsis
           )
-          Spacer(Modifier.height(6.dp))
+          Spacer(Modifier.height(if (compact) 4.dp else 6.dp))
           Text(
             text = book.author,
-            style = MaterialTheme.typography.bodySmall,
+            style = if (compact) {
+              MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp, lineHeight = 13.sp)
+            } else {
+              MaterialTheme.typography.bodySmall
+            },
             color = palette.second.copy(alpha = 0.78f),
-            maxLines = 2,
+            maxLines = if (compact) 1 else 2,
             overflow = TextOverflow.Ellipsis
           )
         }
@@ -119,7 +134,7 @@ fun BookCoverArt(
     Box(
       modifier = Modifier
         .fillMaxHeight()
-        .width(12.dp)
+        .width(if (compact) 8.dp else 12.dp)
         .align(Alignment.CenterStart)
         .background(
           Brush.horizontalGradient(
@@ -140,20 +155,23 @@ fun BookCoverArt(
       }
       Surface(
         color = badgeColor.copy(alpha = 0.92f),
-        shape = RoundedCornerShape(6.dp),
+        shape = RoundedCornerShape(if (compact) 5.dp else 6.dp),
         modifier = Modifier
           .align(Alignment.TopEnd)
-          .padding(7.dp)
+          .padding(if (compact) 5.dp else 7.dp)
       ) {
         Text(
           text = book.format.name,
           style = MaterialTheme.typography.labelSmall.copy(
             fontFamily = JetBrainsMonoFamily,
-            fontSize = 9.5.sp,
+            fontSize = if (compact) 8.5.sp else 9.5.sp,
             fontWeight = FontWeight.Bold
           ),
           color = Color.White,
-          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+          modifier = Modifier.padding(
+            horizontal = if (compact) 5.dp else 6.dp,
+            vertical = if (compact) 1.5.dp else 2.dp
+          )
         )
       }
     }

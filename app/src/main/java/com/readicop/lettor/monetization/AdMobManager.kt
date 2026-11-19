@@ -3,16 +3,25 @@ package com.readicop.lettor.monetization
 import android.app.Activity
 import android.content.Context
 import android.util.DisplayMetrics
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.readicop.lettor.R
 import com.readicop.lettor.data.preferences.ReaderPreferencesRepository
 import com.google.android.gms.ads.AdError
+import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
@@ -175,26 +184,47 @@ fun LibraryAdaptiveBanner(
 ) {
   val context = LocalContext.current
   val bannerAdUnitId = remember(context) { context.getString(R.string.admob_banner_id) }
+  val bannerBgColor = MaterialTheme.colorScheme.surfaceContainerLow
+  val bannerBgArgb = bannerBgColor.toArgb()
+  var adLoadFailed by remember { mutableStateOf(false) }
 
   val adView = remember(context, bannerAdUnitId) {
     runCatching {
       AdView(context).apply {
         adUnitId = bannerAdUnitId
+        setBackgroundColor(bannerBgArgb)
         val metrics: DisplayMetrics = context.resources.displayMetrics
         val adWidthDp = (metrics.widthPixels / metrics.density).toInt().coerceAtLeast(320)
         setAdSize(AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, adWidthDp))
+        adListener = object : AdListener() {
+          override fun onAdLoaded() {
+            adLoadFailed = false
+          }
+
+          override fun onAdFailedToLoad(error: LoadAdError) {
+            adLoadFailed = true
+          }
+        }
         loadAd(AdRequest.Builder().build())
       }
     }.getOrNull()
   }
 
-  if (adView != null) {
+  if (adView != null && !adLoadFailed) {
     DisposableEffect(adView) {
       onDispose { runCatching { adView.destroy() } }
     }
-    AndroidView(
-      factory = { adView },
-      modifier = modifier.fillMaxWidth()
-    )
+    Box(
+      modifier = modifier
+        .fillMaxWidth()
+        .background(bannerBgColor),
+      contentAlignment = Alignment.Center
+    ) {
+      AndroidView(
+        factory = { adView },
+        update = { view -> view.setBackgroundColor(bannerBgArgb) },
+        modifier = Modifier.fillMaxWidth()
+      )
+    }
   }
 }
