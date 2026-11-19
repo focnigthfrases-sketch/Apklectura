@@ -17,15 +17,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -98,6 +95,16 @@ data class PdfWordSelection(
 ) {
   val startWord: Int get() = minOf(anchorWordA, anchorWordB)
   val endWord: Int get() = maxOf(anchorWordA, anchorWordB)
+}
+
+internal fun isDeliberatePdfCenterTap(
+  positionInViewport: Offset,
+  viewportSize: IntSize
+): Boolean {
+  if (viewportSize.width <= 0 || viewportSize.height <= 0) return false
+  val nx = positionInViewport.x / viewportSize.width.toFloat()
+  val ny = positionInViewport.y / viewportSize.height.toFloat()
+  return nx in 0.22f..0.78f && ny in 0.18f..0.82f
 }
 
 private data class PdfPageRenderMetrics(
@@ -396,6 +403,7 @@ private fun PdfPaginatedReader(
 
   var isZoomed by remember { mutableStateOf(false) }
   var activeSelection by remember { mutableStateOf<PdfWordSelection?>(null) }
+  var activeChildPointerId by remember { mutableStateOf<Long?>(null) }
   val pageTextCache = remember(session) { mutableStateMapOf<Int, PdfPageTextData>() }
   val pageMetricsMap = remember(session) { mutableStateMapOf<Int, PdfPageRenderMetrics>() }
 
@@ -403,10 +411,13 @@ private fun PdfPaginatedReader(
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
   val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
-  val topSafePx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let {
+  val contentInsets = rememberReaderContentInsets()
+  val controlsTopInsets = rememberReaderControlsTopInsets()
+  val controlsBottomInsets = rememberReaderControlsBottomInsets()
+  val topSafePx = controlsTopInsets.asPaddingValues().calculateTopPadding().let {
     with(density) { (it + topOverlayClearanceDp).toPx() }
   }
-  val bottomSafePx = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding().let {
+  val bottomSafePx = controlsBottomInsets.asPaddingValues().calculateBottomPadding().let {
     with(density) { it.toPx() }
   }
 
@@ -435,6 +446,9 @@ private fun PdfPaginatedReader(
       }
       .pointerInput(Unit) {
         detectSingleFingerTapAndLongPress(
+          maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
+          shouldCancelGesture = { pagerState.isScrollInProgress },
+          claimPointerDown = { ptrId -> activeChildPointerId != ptrId },
           onTap = {
             if (latestSelection != null) {
               activeSelection = null
@@ -446,8 +460,7 @@ private fun PdfPaginatedReader(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.statusBars)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(contentInsets)
     ) {
       BoxWithConstraints(
         modifier = Modifier
@@ -471,15 +484,18 @@ private fun PdfPaginatedReader(
             colorFilter = colorFilter,
             pageNotes = notesByPage[pageIdx].orEmpty(),
             activeSelection = activeSelection?.takeIf { it.pageIndex == pageIdx },
+            isScrollInProgress = { pagerState.isScrollInProgress },
+            onClaimPointerDown = { ptrId -> activeChildPointerId = ptrId },
+            onReleasePointerDown = { ptrId -> if (activeChildPointerId == ptrId) activeChildPointerId = null },
             onPageTextLoaded = { data -> pageTextCache[pageIdx] = data },
             onMetricsUpdated = { metrics ->
               if (pageMetricsMap[pageIdx] != metrics) pageMetricsMap[pageIdx] = metrics
             },
             onRemoveMetrics = { pageMetricsMap.remove(pageIdx) },
-            onTapPage = {
-              if (activeSelection != null) {
+            onTapPage = { isCenterTap ->
+              if (latestSelection != null) {
                 activeSelection = null
-              } else {
+              } else if (isCenterTap) {
                 onToggleControls()
               }
             },
@@ -614,10 +630,13 @@ private fun PdfSinglePageView(
   colorFilter: ColorFilter?,
   pageNotes: List<HighlightEntity>,
   activeSelection: PdfWordSelection?,
+  isScrollInProgress: () -> Boolean,
+  onClaimPointerDown: (Long) -> Unit,
+  onReleasePointerDown: (Long) -> Unit,
   onPageTextLoaded: (PdfPageTextData) -> Unit,
   onMetricsUpdated: (PdfPageRenderMetrics) -> Unit,
   onRemoveMetrics: () -> Unit,
-  onTapPage: () -> Unit,
+  onTapPage: (isCenterTap: Boolean) -> Unit,
   onOpenPageNotes: () -> Unit,
   onSelectWord: (wordIndex: Int) -> Unit,
   onZoomStateChanged: (Boolean) -> Unit
@@ -637,6 +656,7 @@ private fun PdfSinglePageView(
   val latestViewportSize by rememberUpdatedState(viewportSize)
   val latestBasePageSizePx by rememberUpdatedState(basePageSizePx)
   val latestSelection by rememberUpdatedState(activeSelection)
+  val latestIsScrollInProgress by rememberUpdatedState(isScrollInProgress)
   val latestOnTapPage by rememberUpdatedState(onTapPage)
   val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
@@ -732,7 +752,18 @@ private fun PdfSinglePageView(
       .pointerInput(pageIndex) {
         detectSingleFingerTapAndLongPress(
           shouldSkipDoubleTap = { latestSelection != null },
-          onTap = { latestOnTapPage() },
+          longPressTimeoutMs = SELECTION_LONG_PRESS_DELAY_MS,
+          maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
+          shouldCancelGesture = { latestIsScrollInProgress() },
+          claimPointerDown = { ptrId ->
+            onClaimPointerDown(ptrId)
+            true
+          },
+          onGestureEnded = { ptrId -> onReleasePointerDown(ptrId) },
+          onTap = { tapOffset ->
+            val isCenter = isDeliberatePdfCenterTap(tapOffset, latestViewportSize)
+            latestOnTapPage(isCenter)
+          },
           onLongPress = { tapOffset ->
             val data = latestPageText
             val curBase = latestBasePageSizePx
@@ -984,6 +1015,7 @@ private fun PdfScrollReader(
   )
 
   var activeSelection by remember { mutableStateOf<PdfWordSelection?>(null) }
+  var activeCardPointerId by remember { mutableStateOf<Long?>(null) }
   val pageTextCache = remember(session) { mutableStateMapOf<Int, PdfPageTextData>() }
   val pageMetricsMap = remember(session) { mutableStateMapOf<Int, PdfPageRenderMetrics>() }
 
@@ -991,10 +1023,13 @@ private fun PdfScrollReader(
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
   val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
-  val topSafePx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let {
+  val contentInsets = rememberReaderContentInsets()
+  val controlsTopInsets = rememberReaderControlsTopInsets()
+  val controlsBottomInsets = rememberReaderControlsBottomInsets()
+  val topSafePx = controlsTopInsets.asPaddingValues().calculateTopPadding().let {
     with(density) { (it + topOverlayClearanceDp).toPx() }
   }
-  val bottomSafePx = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding().let {
+  val bottomSafePx = controlsBottomInsets.asPaddingValues().calculateBottomPadding().let {
     with(density) { it.toPx() }
   }
 
@@ -1036,8 +1071,7 @@ private fun PdfScrollReader(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.statusBars)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(contentInsets)
     ) {
       BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
         val targetWidthPx = with(density) { maxWidth.roundToPx() }.coerceAtLeast(720)
@@ -1053,8 +1087,18 @@ private fun PdfScrollReader(
             .fillMaxSize()
             .pointerInput(Unit) {
               detectSingleFingerTapAndLongPress(
-                onTap = {
-                  if (latestActiveSelection != null) activeSelection = null else latestOnToggleControls()
+                maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
+                shouldCancelGesture = { listState.isScrollInProgress },
+                claimPointerDown = { ptrId -> activeCardPointerId != ptrId },
+                onTap = { tapOffset ->
+                  if (latestActiveSelection != null) {
+                    activeSelection = null
+                  } else {
+                    val containerSize = IntSize(size.width, size.height)
+                    if (isDeliberatePdfCenterTap(tapOffset, containerSize)) {
+                      latestOnToggleControls()
+                    }
+                  }
                 }
               )
             }
@@ -1069,13 +1113,22 @@ private fun PdfScrollReader(
               surfaceColors = surfaceColors,
               pageNotes = notesByPage[pageIdx].orEmpty(),
               activeSelection = activeSelection?.takeIf { it.pageIndex == pageIdx },
+              viewportPosInRoot = overlayContainerPosInRoot,
+              viewportContainerSize = overlayContainerSize,
+              isScrollInProgress = { listState.isScrollInProgress },
+              onClaimPointerDown = { ptrId -> activeCardPointerId = ptrId },
+              onReleasePointerDown = { ptrId -> if (activeCardPointerId == ptrId) activeCardPointerId = null },
               onPageTextLoaded = { data -> pageTextCache[pageIdx] = data },
               onMetricsUpdated = { metrics ->
                 if (pageMetricsMap[pageIdx] != metrics) pageMetricsMap[pageIdx] = metrics
               },
               onRemoveMetrics = { pageMetricsMap.remove(pageIdx) },
-              onTapPage = {
-                if (activeSelection != null) activeSelection = null else onToggleControls()
+              onTapPage = { isCenterTap ->
+                if (latestActiveSelection != null) {
+                  activeSelection = null
+                } else if (isCenterTap) {
+                  latestOnToggleControls()
+                }
               },
               onSelectWord = { wordIdx ->
                 val data = pageTextCache[pageIdx]
@@ -1195,10 +1248,15 @@ private fun PdfScrollPageCard(
   surfaceColors: ReaderSurfaceColors,
   pageNotes: List<HighlightEntity>,
   activeSelection: PdfWordSelection?,
+  viewportPosInRoot: Offset,
+  viewportContainerSize: IntSize,
+  isScrollInProgress: () -> Boolean,
+  onClaimPointerDown: (Long) -> Unit,
+  onReleasePointerDown: (Long) -> Unit,
   onPageTextLoaded: (PdfPageTextData) -> Unit,
   onMetricsUpdated: (PdfPageRenderMetrics) -> Unit,
   onRemoveMetrics: () -> Unit,
-  onTapPage: () -> Unit,
+  onTapPage: (isCenterTap: Boolean) -> Unit,
   onSelectWord: (wordIndex: Int) -> Unit
 ) {
   var bitmap by remember(pageIndex, targetWidthPx) { mutableStateOf<Bitmap?>(null) }
@@ -1213,7 +1271,11 @@ private fun PdfScrollPageCard(
   val latestScale by rememberUpdatedState(scale)
   val latestPanOffset by rememberUpdatedState(panOffset)
   val latestCardSize by rememberUpdatedState(cardSize)
+  val latestCardPosInRoot by rememberUpdatedState(cardPosInRoot)
+  val latestViewportPosInRoot by rememberUpdatedState(viewportPosInRoot)
+  val latestViewportContainerSize by rememberUpdatedState(viewportContainerSize)
   val latestSelection by rememberUpdatedState(activeSelection)
+  val latestIsScrollInProgress by rememberUpdatedState(isScrollInProgress)
   val latestOnTapPage by rememberUpdatedState(onTapPage)
   val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
@@ -1318,7 +1380,22 @@ private fun PdfScrollPageCard(
       .pointerInput(pageIndex) {
         detectSingleFingerTapAndLongPress(
           shouldSkipDoubleTap = { latestSelection != null },
-          onTap = { latestOnTapPage() },
+          longPressTimeoutMs = SELECTION_LONG_PRESS_DELAY_MS,
+          maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
+          shouldCancelGesture = { latestIsScrollInProgress() },
+          claimPointerDown = { ptrId ->
+            onClaimPointerDown(ptrId)
+            true
+          },
+          onGestureEnded = { ptrId -> onReleasePointerDown(ptrId) },
+          onTap = { tapOffset ->
+            val posInViewport = Offset(
+              x = (latestCardPosInRoot.x - latestViewportPosInRoot.x) + tapOffset.x,
+              y = (latestCardPosInRoot.y - latestViewportPosInRoot.y) + tapOffset.y
+            )
+            val isCenter = isDeliberatePdfCenterTap(posInViewport, latestViewportContainerSize)
+            latestOnTapPage(isCenter)
+          },
           onDoubleTap = {
             if (latestScale > 1.1f) {
               scale = 1f

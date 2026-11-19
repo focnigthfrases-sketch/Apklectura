@@ -6,8 +6,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.os.Build
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,14 +24,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
@@ -67,6 +68,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -125,18 +127,92 @@ fun ReaderScreen(
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
 
+  val context = LocalContext.current
+  val activity = context as? Activity
+  val view = LocalView.current
+
+  val initialCutoutMode = remember(activity) {
+    val window = activity?.window
+    if (window != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      window.attributes.layoutInDisplayCutoutMode
+    } else 0
+  }
+
+  val applyImmersiveMode = remember(activity, view) {
+    {
+      val window = activity?.window
+      if (window != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          val lp = window.attributes
+          lp.layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+          } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+          }
+          window.attributes = lp
+        }
+        val controller = WindowCompat.getInsetsController(window, view)
+        controller.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+      }
+    }
+  }
+
+  val restoreNormalSystemBars = remember(activity, view, initialCutoutMode) {
+    {
+      val window = activity?.window
+      if (window != null) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          val lp = window.attributes
+          lp.layoutInDisplayCutoutMode = initialCutoutMode
+          window.attributes = lp
+        }
+        val controller = WindowCompat.getInsetsController(window, view)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+        controller.show(WindowInsetsCompat.Type.systemBars())
+      }
+    }
+  }
+
   val handleExit: () -> Unit = {
+    restoreNormalSystemBars()
     viewModel.onExitReaderNormally()
     onNavigateBack()
   }
 
   BackHandler(onBack = handleExit)
 
+  // Enter immersive reading mode (status + navigation bars hidden, transient reveal by edge swipe)
+  // and restore normal system bars upon exiting the reader.
+  DisposableEffect(activity, view, applyImmersiveMode, restoreNormalSystemBars) {
+    applyImmersiveMode()
+    onDispose {
+      restoreNormalSystemBars()
+    }
+  }
+
+  val anyModalOpen = showAppearanceSheet ||
+    showTocSheet ||
+    showSearchSheet ||
+    activeFragment != null ||
+    showAddNoteDialog ||
+    uiState.sleepTimerExpiredDialog
+
+  LaunchedEffect(anyModalOpen) {
+    if (!anyModalOpen) {
+      applyImmersiveMode()
+    }
+  }
+
   val lifecycleOwner = LocalLifecycleOwner.current
-  DisposableEffect(lifecycleOwner, viewModel) {
+  DisposableEffect(lifecycleOwner, viewModel, applyImmersiveMode) {
     val observer = LifecycleEventObserver { _, event ->
       when (event) {
-        Lifecycle.Event.ON_RESUME -> viewModel.onReaderResumed()
+        Lifecycle.Event.ON_RESUME -> {
+          applyImmersiveMode()
+          viewModel.onReaderResumed()
+        }
         Lifecycle.Event.ON_STOP -> viewModel.onReaderStopped()
         else -> Unit
       }
@@ -148,7 +224,6 @@ fun ReaderScreen(
   }
 
   // Keep screen awake while reading
-  val view = LocalView.current
   val keepScreenOn = uiState.preferences.keepScreenOn
   DisposableEffect(view, keepScreenOn) {
     view.keepScreenOn = keepScreenOn
@@ -156,8 +231,6 @@ fun ReaderScreen(
   }
 
   // Per-reader brightness override
-  val context = LocalContext.current
-  val activity = context as? Activity
   val readerBrightness = uiState.preferences.readerBrightness
   DisposableEffect(activity, readerBrightness) {
     val window = activity?.window
@@ -192,6 +265,8 @@ fun ReaderScreen(
     }
   }
 
+  val controlsTopInsets = rememberReaderControlsTopInsets()
+  val controlsBottomInsets = rememberReaderControlsBottomInsets()
   val surfaceColors = uiState.preferences.readerTheme.colors()
   val isBookmarked = uiState.bookmarks.any { it.unitIndex == uiState.currentUnit }
 
@@ -366,7 +441,7 @@ fun ReaderScreen(
         shadowElevation = 2.dp,
         modifier = Modifier
           .align(Alignment.TopEnd)
-          .windowInsetsPadding(WindowInsets.statusBars)
+          .windowInsetsPadding(controlsTopInsets)
           .padding(top = 8.dp, end = 12.dp)
       ) {
         Row(
@@ -396,7 +471,7 @@ fun ReaderScreen(
       exit = slideOutVertically { it } + fadeOut(),
       modifier = Modifier
         .align(Alignment.BottomCenter)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(controlsBottomInsets)
         .padding(bottom = 42.dp, start = 16.dp, end = 16.dp)
     ) {
       TtsFloatingMiniBar(
@@ -421,7 +496,7 @@ fun ReaderScreen(
       exit = fadeOut(),
       modifier = Modifier
         .align(Alignment.BottomEnd)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(controlsBottomInsets)
         .padding(end = 16.dp, bottom = 44.dp)
     ) {
       Surface(
@@ -472,7 +547,7 @@ fun ReaderScreen(
         shadowElevation = 4.dp,
         modifier = Modifier.fillMaxWidth()
       ) {
-        Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
+        Column(modifier = Modifier.windowInsetsPadding(controlsTopInsets)) {
           Row(
             modifier = Modifier
               .fillMaxWidth()
@@ -605,7 +680,7 @@ fun ReaderScreen(
       ) {
         Column(
           modifier = Modifier
-            .windowInsetsPadding(WindowInsets.navigationBars)
+            .windowInsetsPadding(controlsBottomInsets)
             .padding(top = 8.dp, bottom = 10.dp)
         ) {
           // Quick Advanced Reader Tools Strip
@@ -801,7 +876,7 @@ fun ReaderScreen(
       hostState = snackbarHostState,
       modifier = Modifier
         .align(Alignment.BottomCenter)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(controlsBottomInsets)
         .padding(bottom = 16.dp)
     )
   }

@@ -465,4 +465,62 @@ class ExampleRobolectricTest {
     )!!
     assertEquals(2400, maxOf(spec8x.bitmapWidthPx, spec8x.bitmapHeightPx))
   }
+
+  @Test
+  fun `pdf deliberate center tap zone and selection hold delay respect thresholds`() {
+    val viewport = androidx.compose.ui.unit.IntSize(1000, 2000)
+
+    // Center of viewport toggles controls
+    assertTrue(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(500f, 1000f),
+        viewport
+      )
+    )
+    assertTrue(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(250f, 400f),
+        viewport
+      )
+    )
+
+    // Edge / margin / corner / gesture-bar touches never toggle PDF controls
+    assertFalse(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(100f, 1000f),
+        viewport
+      )
+    )
+    assertFalse(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(900f, 1000f),
+        viewport
+      )
+    )
+    assertFalse(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(500f, 120f),
+        viewport
+      )
+    )
+    assertFalse(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(500f, 1900f),
+        viewport
+      )
+    )
+    assertFalse(
+      com.readicop.lettor.ui.reader.isDeliberatePdfCenterTap(
+        androidx.compose.ui.geometry.Offset(500f, 1000f),
+        androidx.compose.ui.unit.IntSize.Zero
+      )
+    )
+
+    // Selection delay is in 400-500ms window and strictly longer than deliberate tap window
+    assertTrue(com.readicop.lettor.ui.reader.SELECTION_LONG_PRESS_DELAY_MS in 400L..500L)
+    assertTrue(
+      com.readicop.lettor.ui.reader.PDF_DELIBERATE_TAP_MAX_DURATION_MS <
+        com.readicop.lettor.ui.reader.SELECTION_LONG_PRESS_DELAY_MS
+    )
+  }
 }

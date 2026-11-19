@@ -13,16 +13,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -602,10 +599,18 @@ private fun EpubPaginatedReader(
   }
 
   val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
-  val statusTopDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-  val navBottomDp = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-  val topSafePx = with(density) { (statusTopDp + topOverlayClearanceDp).toPx() }
-  val bottomSafePx = with(density) { navBottomDp.toPx() }
+  val contentInsets = rememberReaderContentInsets()
+  val contentPadding = contentInsets.asPaddingValues()
+  val controlsTopInsets = rememberReaderControlsTopInsets()
+  val controlsBottomInsets = rememberReaderControlsBottomInsets()
+  val statusTopDp = contentPadding.calculateTopPadding()
+  val navBottomDp = contentPadding.calculateBottomPadding()
+  val topSafePx = with(density) {
+    (controlsTopInsets.asPaddingValues().calculateTopPadding() + topOverlayClearanceDp).toPx()
+  }
+  val bottomSafePx = with(density) {
+    controlsBottomInsets.asPaddingValues().calculateBottomPadding().toPx()
+  }
 
   val latestSelection by rememberUpdatedState(activeSelection)
   val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
@@ -729,8 +734,7 @@ private fun EpubPaginatedReader(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.statusBars)
-        .windowInsetsPadding(WindowInsets.navigationBars),
+        .windowInsetsPadding(contentInsets),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
       // Subtle editorial running header
@@ -1349,11 +1353,14 @@ private fun EpubScrollReader(
   }
 
   val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
-  val topSafePx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let {
-    with(density) { (it + topOverlayClearanceDp).toPx() }
+  val contentInsets = rememberReaderContentInsets()
+  val controlsTopInsets = rememberReaderControlsTopInsets()
+  val controlsBottomInsets = rememberReaderControlsBottomInsets()
+  val topSafePx = with(density) {
+    (controlsTopInsets.asPaddingValues().calculateTopPadding() + topOverlayClearanceDp).toPx()
   }
-  val bottomSafePx = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding().let {
-    with(density) { it.toPx() }
+  val bottomSafePx = with(density) {
+    controlsBottomInsets.asPaddingValues().calculateBottomPadding().toPx()
   }
 
   LaunchedEffect(chapter.index) {
@@ -1403,8 +1410,7 @@ private fun EpubScrollReader(
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(WindowInsets.statusBars)
-        .windowInsetsPadding(WindowInsets.navigationBars)
+        .windowInsetsPadding(contentInsets)
         .pointerInput(Unit) {
           detectSingleFingerTapAndLongPress(
             onTap = {
