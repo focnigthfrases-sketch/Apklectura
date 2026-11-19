@@ -56,7 +56,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.readicop.lettor.ui.theme.ReaderSurfaceColors
+import kotlin.math.asin
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
+
+enum class SelectionHandleShape {
+  DOT,
+  TEARDROP
+}
 
 /**
  * Formats a clean literary citation for the user's clipboard/share sheet:
@@ -108,6 +115,7 @@ fun ReaderSelectionOverlay(
   selectionBounds: Rect?,
   copyEnabled: Boolean,
   highlightEnabled: Boolean,
+  handleShape: SelectionHandleShape = SelectionHandleShape.DOT,
   onDragAnchorA: (Offset) -> Unit,
   onDragAnchorB: (Offset) -> Unit,
   onDragFinished: () -> Unit = {},
@@ -127,6 +135,12 @@ fun ReaderSelectionOverlay(
     val density = LocalDensity.current
     val edgePadPx = with(density) { 10.dp.toPx() }
     val handleClearancePx = with(density) { 12.dp.toPx() }
+    val teardropHeightPx = with(density) { 16.dp.toPx() }
+    val maxHandleY = if (handleShape == SelectionHandleShape.TEARDROP) {
+      (containerSize.height - teardropHeightPx - edgePadPx).coerceAtLeast(edgePadPx)
+    } else {
+      (containerSize.height - edgePadPx).coerceAtLeast(edgePadPx)
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
       if (handlesVisible) {
@@ -136,9 +150,10 @@ fun ReaderSelectionOverlay(
               handleKey = "anchor_a",
               position = Offset(
                 x = posA.x.coerceIn(edgePadPx, (containerSize.width - edgePadPx).coerceAtLeast(edgePadPx)),
-                y = posA.y.coerceIn(edgePadPx, (containerSize.height - edgePadPx).coerceAtLeast(edgePadPx))
+                y = posA.y.coerceIn(edgePadPx, maxHandleY)
               ),
               surfaceColors = surfaceColors,
+              handleShape = handleShape,
               contentDescription = "Manejador de inicio de selección",
               testTag = "selection_handle_start",
               onDragTo = onDragAnchorA,
@@ -153,9 +168,10 @@ fun ReaderSelectionOverlay(
               handleKey = "anchor_b",
               position = Offset(
                 x = posB.x.coerceIn(edgePadPx, (containerSize.width - edgePadPx).coerceAtLeast(edgePadPx)),
-                y = posB.y.coerceIn(edgePadPx, (containerSize.height - edgePadPx).coerceAtLeast(edgePadPx))
+                y = posB.y.coerceIn(edgePadPx, maxHandleY)
               ),
               surfaceColors = surfaceColors,
+              handleShape = handleShape,
               contentDescription = "Manejador de fin de selección",
               testTag = "selection_handle_end",
               onDragTo = onDragAnchorB,
@@ -169,8 +185,13 @@ fun ReaderSelectionOverlay(
         SelectionFloatingMenu(
           selectionBounds = selectionBounds,
           containerSize = containerSize,
-          topSafeInsetPx = topSafeInsetPx,
+          topSafeInsetPx = topSafePxCompat(topSafeInsetPx),
           bottomSafeInsetPx = bottomSafeInsetPx,
+          extraBelowSelectionGapPx = if (handleShape == SelectionHandleShape.TEARDROP && handlesVisible) {
+            with(density) { 18.dp.toPx() }
+          } else {
+            0f
+          },
           surfaceColors = surfaceColors,
           copyEnabled = copyEnabled,
           highlightEnabled = highlightEnabled,
@@ -184,11 +205,14 @@ fun ReaderSelectionOverlay(
   }
 }
 
+private fun topSafePxCompat(value: Float): Float = value
+
 @Composable
 private fun SelectionHandleDot(
   handleKey: String,
   position: Offset,
   surfaceColors: ReaderSurfaceColors,
+  handleShape: SelectionHandleShape,
   contentDescription: String,
   testTag: String,
   onDragTo: (Offset) -> Unit,
@@ -197,7 +221,9 @@ private fun SelectionHandleDot(
   val density = LocalDensity.current
   val touchSizeDp = 48.dp
   val halfTouchPx = with(density) { (touchSizeDp / 2f).toPx() }
-  val dotRadiusPx = with(density) { 6.dp.toPx() } // 12.dp diameter
+  val dotRadiusPx = with(density) { 6.dp.toPx() } // 12.dp visual width/diameter
+  val teardropTipLocalYPx = with(density) { 14.dp.toPx() }
+  val anchorLocalYPx = if (handleShape == SelectionHandleShape.TEARDROP) teardropTipLocalYPx else halfTouchPx
 
   val latestPos by rememberUpdatedState(position)
   val latestOnDragTo by rememberUpdatedState(onDragTo)
@@ -208,7 +234,7 @@ private fun SelectionHandleDot(
       .offset {
         IntOffset(
           x = (position.x - halfTouchPx).roundToInt(),
-          y = (position.y - halfTouchPx).roundToInt()
+          y = (position.y - anchorLocalYPx).roundToInt()
         )
       }
       .size(touchSizeDp)
@@ -232,39 +258,99 @@ private fun SelectionHandleDot(
     contentAlignment = Alignment.Center
   ) {
     Canvas(modifier = Modifier.fillMaxSize()) {
-      val c = Offset(size.width * 0.5f, size.height * 0.5f)
-      val shadowCenter = Offset(c.x, c.y + 1.5.dp.toPx())
+      if (handleShape == SelectionHandleShape.TEARDROP) {
+        val r = dotRadiusPx
+        val tipToCenterDist = r * 1.65f
+        val cx = size.width * 0.5f
+        val tipY = teardropTipLocalYPx
+        val cy = tipY + tipToCenterDist
 
-      // Soft multi-layered shadow so the handle stays visible over any light/sepia/dark/ebony backdrop
-      drawCircle(
-        color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.16f else 0.06f),
-        radius = dotRadiusPx + 5.dp.toPx(),
-        center = shadowCenter
-      )
-      drawCircle(
-        color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.24f else 0.12f),
-        radius = dotRadiusPx + 3.dp.toPx(),
-        center = shadowCenter
-      )
-      drawCircle(
-        color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.34f else 0.20f),
-        radius = dotRadiusPx + 1.2.dp.toPx(),
-        center = shadowCenter
-      )
+        val sinA = (r / tipToCenterDist).coerceIn(0f, 0.99f)
+        val cosA = sqrt((1f - sinA * sinA).coerceAtLeast(0f))
+        val startAngleDeg = -Math.toDegrees(asin(sinA.toDouble())).toFloat()
+        val sweepAngleDeg = 180f - 2f * startAngleDeg
 
-      // Outer subtle contrast halo (essential on pure black Ebony and bright Paper)
-      drawCircle(
-        color = if (surfaceColors.isDark) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.90f),
-        radius = dotRadiusPx + 1.dp.toPx(),
-        center = c
-      )
+        fun buildTeardropPath(inflatePx: Float, yShiftPx: Float = 0f): Path {
+          val ir = (r + inflatePx).coerceAtLeast(1f)
+          val iTipY = (tipY - inflatePx * 1.25f) + yShiftPx
+          val iCy = cy + yShiftPx
+          val rect = Rect(cx - ir, iCy - ir, cx + ir, iCy + ir)
+          val dx = ir * cosA
+          val dy = -ir * sinA
+          return Path().apply {
+            moveTo(cx, iTipY)
+            lineTo(cx + dx, iCy + dy)
+            arcTo(
+              rect = rect,
+              startAngleDegrees = startAngleDeg,
+              sweepAngleDegrees = sweepAngleDeg,
+              forceMoveTo = false
+            )
+            lineTo(cx, iTipY)
+            close()
+          }
+        }
 
-      // 12.dp diameter accent circle matching reader accent
-      drawCircle(
-        color = surfaceColors.accent,
-        radius = dotRadiusPx,
-        center = c
-      )
+        // Soft multi-layered shadow so the droplet stays legible over any theme
+        drawPath(
+          path = buildTeardropPath(inflatePx = 4.2.dp.toPx(), yShiftPx = 1.4.dp.toPx()),
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.16f else 0.06f)
+        )
+        drawPath(
+          path = buildTeardropPath(inflatePx = 2.6.dp.toPx(), yShiftPx = 1.2.dp.toPx()),
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.24f else 0.12f)
+        )
+        drawPath(
+          path = buildTeardropPath(inflatePx = 1.2.dp.toPx(), yShiftPx = 1.0.dp.toPx()),
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.32f else 0.18f)
+        )
+
+        // Contrast halo
+        drawPath(
+          path = buildTeardropPath(inflatePx = 1.0.dp.toPx()),
+          color = if (surfaceColors.isDark) Color.White.copy(alpha = 0.48f) else Color.White.copy(alpha = 0.92f)
+        )
+
+        // Crisp accent water droplet pointing up toward the text
+        drawPath(
+          path = buildTeardropPath(inflatePx = 0f),
+          color = surfaceColors.accent
+        )
+      } else {
+        val c = Offset(size.width * 0.5f, size.height * 0.5f)
+        val shadowCenter = Offset(c.x, c.y + 1.5.dp.toPx())
+
+        // Soft multi-layered shadow so the handle stays visible over any light/sepia/dark/ebony backdrop
+        drawCircle(
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.16f else 0.06f),
+          radius = dotRadiusPx + 5.dp.toPx(),
+          center = shadowCenter
+        )
+        drawCircle(
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.24f else 0.12f),
+          radius = dotRadiusPx + 3.dp.toPx(),
+          center = shadowCenter
+        )
+        drawCircle(
+          color = Color.Black.copy(alpha = if (surfaceColors.isDark) 0.34f else 0.20f),
+          radius = dotRadiusPx + 1.2.dp.toPx(),
+          center = shadowCenter
+        )
+
+        // Outer subtle contrast halo (essential on pure black Ebony and bright Paper)
+        drawCircle(
+          color = if (surfaceColors.isDark) Color.White.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.90f),
+          radius = dotRadiusPx + 1.dp.toPx(),
+          center = c
+        )
+
+        // 12.dp diameter accent circle matching reader accent
+        drawCircle(
+          color = surfaceColors.accent,
+          radius = dotRadiusPx,
+          center = c
+        )
+      }
     }
   }
 }
@@ -275,6 +361,7 @@ private fun SelectionFloatingMenu(
   containerSize: IntSize,
   topSafeInsetPx: Float,
   bottomSafeInsetPx: Float,
+  extraBelowSelectionGapPx: Float,
   surfaceColors: ReaderSurfaceColors,
   copyEnabled: Boolean,
   highlightEnabled: Boolean,
@@ -300,7 +387,7 @@ private fun SelectionFloatingMenu(
   val bottomLimit = (containerSize.height - bottomSafeInsetPx - edgeMarginPx - menuH).coerceAtLeast(topLimit)
 
   val aboveY = selectionBounds.top - selectionGapPx - menuH
-  val belowY = selectionBounds.bottom + selectionGapPx
+  val belowY = selectionBounds.bottom + selectionGapPx + extraBelowSelectionGapPx
 
   val tightTopEdge = (topSafeInsetPx + tightGapPx).coerceAtLeast(tightGapPx)
   val tightBottomEdge = (containerSize.height - bottomSafeInsetPx - tightGapPx - menuH)
@@ -315,9 +402,9 @@ private fun SelectionFloatingMenu(
     belowY <= bottomLimit -> belowY
     // 3. Screen edge without overlapping selection
     tightTopEdge + menuH <= selectionBounds.top - tightGapPx -> tightTopEdge
-    tightBottomEdge >= selectionBounds.bottom + tightGapPx -> tightBottomEdge
+    tightBottomEdge >= selectionBounds.bottom + extraBelowSelectionGapPx + tightGapPx -> tightBottomEdge
     rawTopEdge + menuH <= selectionBounds.top - tightGapPx -> rawTopEdge
-    rawBottomEdge >= selectionBounds.bottom + tightGapPx -> rawBottomEdge
+    rawBottomEdge >= selectionBounds.bottom + extraBelowSelectionGapPx + tightGapPx -> rawBottomEdge
     // Selection covers entire viewport height: pin to edge farthest from vertical center
     else -> if (selectionBounds.center.y >= containerSize.height * 0.5f) topLimit else bottomLimit
   }

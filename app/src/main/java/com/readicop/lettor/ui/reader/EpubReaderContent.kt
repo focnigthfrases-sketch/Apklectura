@@ -271,8 +271,7 @@ private fun computeEpubSelectionGeometry(
   selection: EpubTextSelection?,
   chapterIndex: Int,
   visibleSlices: Collection<EpubSliceLayoutInfo>,
-  containerPosInRoot: Offset,
-  handleHorizontalOffsetPx: Float
+  containerPosInRoot: Offset
 ): EpubSelectionGeometry {
   if (selection == null || selection.chapterIndex != chapterIndex || visibleSlices.isEmpty()) {
     return EpubSelectionGeometry(null, null, null)
@@ -299,13 +298,14 @@ private fun computeEpubSelectionGeometry(
       val idx = localOffset.coerceIn(0, textLen - 1)
       matchingSlice.layoutResult.getBoundingBox(idx)
     }
-    // Sit left of first character or right of last character, vertically centered on the line, without covering letters
+    // Teardrop tip sits right at the bottom-left (start) or bottom-right (end) edge of the
+    // selected character/line, pointing up toward the word without covering any letters.
     val x = (matchingSlice.posInRoot.x - containerPosInRoot.x) + if (isEndEdge) {
-      box.right + handleHorizontalOffsetPx
+      box.right
     } else {
-      box.left - handleHorizontalOffsetPx
+      box.left
     }
-    val y = (matchingSlice.posInRoot.y - containerPosInRoot.y) + (box.top + box.bottom) * 0.5f
+    val y = (matchingSlice.posInRoot.y - containerPosInRoot.y) + box.bottom
     return Offset(x, y)
   }
 
@@ -353,14 +353,14 @@ private fun hitTestEpubCharPosition(
   pointerInContainer: Offset,
   containerPosInRoot: Offset,
   visibleSlices: Collection<EpubSliceLayoutInfo>,
-  isLeftEdgeHandle: Boolean,
-  handleHorizontalOffsetPx: Float
+  tipVerticalProbeOffsetPx: Float
 ): EpubCharPosition? {
   if (visibleSlices.isEmpty()) return null
-  val xAdjust = if (isLeftEdgeHandle) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
+  // The teardrop tip points straight up at the bottom edge of the letter; probe slightly upward
+  // into the line so dragging tracks the exact letter above the tip without jumping a line down.
   val targetRoot = Offset(
-    x = containerPosInRoot.x + pointerInContainer.x + xAdjust,
-    y = containerPosInRoot.y + pointerInContainer.y
+    x = containerPosInRoot.x + pointerInContainer.x,
+    y = containerPosInRoot.y + pointerInContainer.y - tipVerticalProbeOffsetPx
   )
 
   var bestSlice: EpubSliceLayoutInfo? = null
@@ -598,7 +598,7 @@ private fun EpubPaginatedReader(
     mutableStateMapOf<EpubSliceKey, EpubSliceLayoutInfo>()
   }
 
-  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
+  val tipVerticalProbeOffsetPx = with(density) { 8.dp.toPx() }
   val contentInsets = rememberReaderContentInsets()
   val contentPadding = contentInsets.asPaddingValues()
   val controlsTopInsets = rememberReaderControlsTopInsets()
@@ -1063,8 +1063,7 @@ private fun EpubPaginatedReader(
       selection = activeSelection,
       chapterIndex = chapter.index,
       visibleSlices = currentPageSlices,
-      containerPosInRoot = overlayContainerPosInRoot,
-      handleHorizontalOffsetPx = handleHorizontalOffsetPx
+      containerPosInRoot = overlayContainerPosInRoot
     )
     val selectedText = remember(activeSelection, chapter.blocks) {
       if (activeSelection != null && activeSelection.chapterIndex == chapter.index) {
@@ -1086,27 +1085,24 @@ private fun EpubPaginatedReader(
         selectionBounds = geometry.selectionBounds,
         copyEnabled = true,
         highlightEnabled = true,
+        handleShape = SelectionHandleShape.TEARDROP,
         onDragAnchorA = { ptr ->
-          val isLeft = activeSelection.anchorA <= activeSelection.anchorB
           val hit = hitTestEpubCharPosition(
             pointerInContainer = ptr,
             containerPosInRoot = overlayContainerPosInRoot,
             visibleSlices = currentPageSlices,
-            isLeftEdgeHandle = isLeft,
-            handleHorizontalOffsetPx = handleHorizontalOffsetPx
+            tipVerticalProbeOffsetPx = tipVerticalProbeOffsetPx
           )
           if (hit != null && hit != activeSelection.anchorB) {
             onSelectionChanged(activeSelection.copy(anchorA = hit))
           }
         },
         onDragAnchorB = { ptr ->
-          val isLeft = activeSelection.anchorB < activeSelection.anchorA
           val hit = hitTestEpubCharPosition(
             pointerInContainer = ptr,
             containerPosInRoot = overlayContainerPosInRoot,
             visibleSlices = currentPageSlices,
-            isLeftEdgeHandle = isLeft,
-            handleHorizontalOffsetPx = handleHorizontalOffsetPx
+            tipVerticalProbeOffsetPx = tipVerticalProbeOffsetPx
           )
           if (hit != null && hit != activeSelection.anchorA) {
             onSelectionChanged(activeSelection.copy(anchorB = hit))
@@ -1261,6 +1257,8 @@ private fun SelectableTextBlockWrapper(
       }
       .pointerInput(sliceKey, rawText) {
         detectSingleFingerTapAndLongPress(
+          longPressTimeoutMs = SELECTION_LONG_PRESS_DELAY_MS,
+          maxTapDurationMs = 320L,
           onLongPress = { localOffset ->
             val layout = latestLayout
             val localChar = if (layout != null && rawText.isNotEmpty()) {
@@ -1352,7 +1350,7 @@ private fun EpubScrollReader(
     mutableStateMapOf<EpubSliceKey, EpubSliceLayoutInfo>()
   }
 
-  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
+  val tipVerticalProbeOffsetPx = with(density) { 8.dp.toPx() }
   val contentInsets = rememberReaderContentInsets()
   val controlsTopInsets = rememberReaderControlsTopInsets()
   val controlsBottomInsets = rememberReaderControlsBottomInsets()
@@ -1651,8 +1649,7 @@ private fun EpubScrollReader(
       selection = activeSelection,
       chapterIndex = chapter.index,
       visibleSlices = scrollSlices,
-      containerPosInRoot = overlayContainerPosInRoot,
-      handleHorizontalOffsetPx = handleHorizontalOffsetPx
+      containerPosInRoot = overlayContainerPosInRoot
     )
     val selectedText = remember(activeSelection, chapter.blocks) {
       if (activeSelection != null && activeSelection.chapterIndex == chapter.index) {
@@ -1674,27 +1671,24 @@ private fun EpubScrollReader(
         selectionBounds = geometry.selectionBounds,
         copyEnabled = true,
         highlightEnabled = true,
+        handleShape = SelectionHandleShape.TEARDROP,
         onDragAnchorA = { ptr ->
-          val isLeft = activeSelection.anchorA <= activeSelection.anchorB
           val hit = hitTestEpubCharPosition(
             pointerInContainer = ptr,
             containerPosInRoot = overlayContainerPosInRoot,
             visibleSlices = scrollSlices,
-            isLeftEdgeHandle = isLeft,
-            handleHorizontalOffsetPx = handleHorizontalOffsetPx
+            tipVerticalProbeOffsetPx = tipVerticalProbeOffsetPx
           )
           if (hit != null && hit != activeSelection.anchorB) {
             onSelectionChanged(activeSelection.copy(anchorA = hit))
           }
         },
         onDragAnchorB = { ptr ->
-          val isLeft = activeSelection.anchorB < activeSelection.anchorA
           val hit = hitTestEpubCharPosition(
             pointerInContainer = ptr,
             containerPosInRoot = overlayContainerPosInRoot,
             visibleSlices = scrollSlices,
-            isLeftEdgeHandle = isLeft,
-            handleHorizontalOffsetPx = handleHorizontalOffsetPx
+            tipVerticalProbeOffsetPx = tipVerticalProbeOffsetPx
           )
           if (hit != null && hit != activeSelection.anchorA) {
             onSelectionChanged(activeSelection.copy(anchorB = hit))
