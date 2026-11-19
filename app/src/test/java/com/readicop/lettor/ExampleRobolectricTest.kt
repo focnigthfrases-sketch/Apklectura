@@ -267,4 +267,131 @@ class ExampleRobolectricTest {
     digitalPdf.delete()
     scannedPdf.delete()
   }
+
+  @Test
+  fun `saved epub highlight resolves only selected characters across blocks and slices`() {
+    val p0 = "En un lugar de la Mancha, de cuyo nombre no quiero acordarme."
+    val p1 = "No ha mucho tiempo que vivía un hidalgo."
+    val singleBlockHighlight = com.readicop.lettor.data.local.HighlightEntity(
+      id = 1L,
+      bookId = 10L,
+      unitIndex = 0,
+      blockIndex = 0,
+      endBlockIndex = 0,
+      startCharOffset = 6,
+      endCharOffset = 11,
+      excerpt = "lugar",
+      color = com.readicop.lettor.data.local.HighlightColor.TERRACOTTA,
+      isStickyNoteOnly = false
+    )
+
+    // First slice [0..30): must highlight strictly "lugar" [6..11), not the full paragraph
+    val slice0Range = com.readicop.lettor.ui.reader.resolveSavedHighlightRangeInSlice(
+      highlight = singleBlockHighlight,
+      fullBlockText = p0,
+      blockIndex = 0,
+      sliceStartOffset = 0,
+      sliceLength = 30
+    )
+    assertEquals(6 until 11, slice0Range)
+    assertEquals("lugar", p0.substring(slice0Range!!))
+
+    // Second slice [30..length) of the SAME paragraph must NOT be highlighted
+    val slice1Range = com.readicop.lettor.ui.reader.resolveSavedHighlightRangeInSlice(
+      highlight = singleBlockHighlight,
+      fullBlockText = p0,
+      blockIndex = 0,
+      sliceStartOffset = 30,
+      sliceLength = p0.length - 30
+    )
+    assertEquals(null, slice1Range)
+
+    // Another block must NOT be highlighted
+    val otherBlockRange = com.readicop.lettor.ui.reader.resolveSavedHighlightRangeInSlice(
+      highlight = singleBlockHighlight,
+      fullBlockText = p1,
+      blockIndex = 1,
+      sliceStartOffset = 0,
+      sliceLength = p1.length
+    )
+    assertEquals(null, otherBlockRange)
+
+    // Multi-block highlight spanning from p0[51..] ("acordarme.") to p1[..11] ("No ha mucho")
+    val multiBlockHighlight = com.readicop.lettor.data.local.HighlightEntity(
+      id = 2L,
+      bookId = 10L,
+      unitIndex = 0,
+      blockIndex = 0,
+      endBlockIndex = 1,
+      startCharOffset = 51,
+      endCharOffset = 11,
+      excerpt = "acordarme.\n\nNo ha mucho",
+      color = com.readicop.lettor.data.local.HighlightColor.SAGE,
+      isStickyNoteOnly = false
+    )
+    val startSliceTail = com.readicop.lettor.ui.reader.resolveSavedHighlightRangeInSlice(
+      highlight = multiBlockHighlight,
+      fullBlockText = p0,
+      blockIndex = 0,
+      sliceStartOffset = 30,
+      sliceLength = p0.length - 30
+    )
+    assertEquals(21 until (p0.length - 30), startSliceTail)
+
+    val endBlockHead = com.readicop.lettor.ui.reader.resolveSavedHighlightRangeInSlice(
+      highlight = multiBlockHighlight,
+      fullBlockText = p1,
+      blockIndex = 1,
+      sliceStartOffset = 0,
+      sliceLength = p1.length
+    )
+    assertEquals(0 until 11, endBlockHead)
+  }
+
+  @Test
+  fun `room highlight persistence preserves exact character offsets when reopening book`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      kotlinx.coroutines.runBlocking {
+        val bookId = db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = "/tmp/quijote.epub"
+          )
+        )
+        db.highlightDao().insertHighlight(
+          com.readicop.lettor.data.local.HighlightEntity(
+            bookId = bookId,
+            unitIndex = 1,
+            blockIndex = 2,
+            endBlockIndex = 2,
+            startCharOffset = 14,
+            endCharOffset = 29,
+            excerpt = "de la Mancha",
+            stickyNote = "",
+            color = com.readicop.lettor.data.local.HighlightColor.SKY,
+            isStickyNoteOnly = false
+          )
+        )
+        val loaded = db.highlightDao().getAllHighlightsOnce().filter { it.bookId == bookId }
+        assertEquals(1, loaded.size)
+        val saved = loaded.first()
+        assertEquals(2, saved.blockIndex)
+        assertEquals(2, saved.endBlockIndex)
+        assertEquals(14, saved.startCharOffset)
+        assertEquals(29, saved.endCharOffset)
+        assertEquals(com.readicop.lettor.data.local.HighlightColor.SKY, saved.color)
+        assertFalse(saved.isStickyNoteOnly)
+      }
+    } finally {
+      db.close()
+    }
+  }
 }

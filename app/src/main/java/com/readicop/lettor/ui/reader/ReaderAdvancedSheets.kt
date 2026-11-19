@@ -83,6 +83,7 @@ fun FragmentToolsSheet(
   bookAuthor: String,
   fragmentText: String,
   blockIndex: Int,
+  hasHighlightableRange: Boolean = blockIndex >= 0,
   onSaveHighlight: (stickyNote: String, color: HighlightColor, isStickyOnly: Boolean) -> Unit,
   onReadAloudFromHere: (() -> Unit)?,
   onLookupWord: (String) -> DictionaryEntry,
@@ -217,12 +218,12 @@ fun FragmentToolsSheet(
           ) {
             Button(
               onClick = {
-                onSaveHighlight(stickyNote, selectedColor, blockIndex < 0 && stickyNote.isNotBlank())
+                onSaveHighlight(stickyNote, selectedColor, !hasHighlightableRange && stickyNote.isNotBlank())
                 onDismiss()
               },
               modifier = Modifier.weight(1f).testTag("save_highlight_button")
             ) {
-              Text(if (blockIndex >= 0) "Guardar resaltado" else "Guardar nota adhesiva")
+              Text(if (hasHighlightableRange) "Guardar resaltado" else "Guardar nota adhesiva")
             }
           }
 

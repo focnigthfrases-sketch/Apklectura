@@ -40,7 +40,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -72,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asImageBitmap
 import com.readicop.lettor.notifications.ToucanArtwork
 import com.readicop.lettor.monetization.AdMobManager
+import com.readicop.lettor.ui.components.LettorThinSlider
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
 import com.readicop.lettor.ui.theme.colors
 import com.readicop.lettor.ui.theme.fontFamily
@@ -289,7 +289,7 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.primary
           )
         }
-        Slider(
+        LettorThinSlider(
           value = prefs.fontSizeSp,
           onValueChange = { viewModel.setFontSizeSp(it) },
           valueRange = 14f..28f,

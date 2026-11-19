@@ -1,5 +1,12 @@
 package com.readicop.lettor.ui.reader
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,13 +34,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.QuestionAnswer
-import androidx.compose.material.icons.filled.ScreenLockRotation
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -46,7 +50,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -62,6 +65,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -78,11 +90,246 @@ import com.readicop.lettor.data.preferences.ReaderTheme
 import com.readicop.lettor.domain.engine.BookQuestionAnswer
 import com.readicop.lettor.domain.engine.EpubChapterStub
 import com.readicop.lettor.domain.engine.EpubSearchHit
+import com.readicop.lettor.ui.components.LettorRulerBrightnessSlider
+import com.readicop.lettor.ui.components.LettorThinSlider
 import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
 import com.readicop.lettor.ui.theme.LiterataFamily
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
 import com.readicop.lettor.ui.theme.colors
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
+
+private enum class AppearanceCanvasIcon {
+  PAGE,
+  LIGHT,
+  AUTO_LIGHT,
+  ORIENTATION,
+  TIME,
+  MORE_TUNE,
+  CHEVRON_DOWN
+}
+
+@Composable
+private fun AppearanceCustomIcon(
+  type: AppearanceCanvasIcon,
+  tint: Color,
+  accentTint: Color,
+  modifier: Modifier = Modifier
+) {
+  Canvas(modifier = modifier.size(18.dp)) {
+    val w = size.width
+    val h = size.height
+    val strokePx = 1.65.dp.toPx()
+    val stroke = Stroke(width = strokePx, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+    when (type) {
+      AppearanceCanvasIcon.PAGE -> {
+        val pageOutline = Path().apply {
+          moveTo(w * 0.22f, h * 0.14f)
+          lineTo(w * 0.62f, h * 0.14f)
+          lineTo(w * 0.80f, h * 0.32f)
+          lineTo(w * 0.80f, h * 0.86f)
+          lineTo(w * 0.22f, h * 0.86f)
+          close()
+        }
+        drawPath(pageOutline, color = tint, style = stroke)
+        val fold = Path().apply {
+          moveTo(w * 0.62f, h * 0.14f)
+          lineTo(w * 0.62f, h * 0.32f)
+          lineTo(w * 0.80f, h * 0.32f)
+        }
+        drawPath(fold, color = accentTint, style = stroke)
+        drawLine(
+          color = accentTint,
+          start = Offset(w * 0.35f, h * 0.50f),
+          end = Offset(w * 0.66f, h * 0.50f),
+          strokeWidth = strokePx,
+          cap = StrokeCap.Round
+        )
+        drawLine(
+          color = tint.copy(alpha = 0.72f),
+          start = Offset(w * 0.35f, h * 0.67f),
+          end = Offset(w * 0.60f, h * 0.67f),
+          strokeWidth = strokePx,
+          cap = StrokeCap.Round
+        )
+      }
+
+      AppearanceCanvasIcon.LIGHT -> {
+        val center = Offset(w * 0.5f, h * 0.5f)
+        drawCircle(
+          color = tint,
+          radius = w * 0.20f,
+          center = center,
+          style = stroke
+        )
+        val innerR = w * 0.31f
+        val outerR = w * 0.43f
+        for (i in 0 until 8) {
+          val rad = (i * 45.0) * (PI / 180.0)
+          val cosA = cos(rad).toFloat()
+          val sinA = sin(rad).toFloat()
+          drawLine(
+            color = if (i % 2 == 0) accentTint else tint,
+            start = Offset(center.x + innerR * cosA, center.y + innerR * sinA),
+            end = Offset(center.x + outerR * cosA, center.y + outerR * sinA),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+        }
+      }
+
+      AppearanceCanvasIcon.AUTO_LIGHT -> {
+        val center = Offset(w * 0.5f, h * 0.5f)
+        drawCircle(color = tint, radius = w * 0.32f, center = center, style = stroke)
+        // Diagonal half tone / auto marker
+        drawArc(
+          color = accentTint,
+          startAngle = -90f,
+          sweepAngle = 180f,
+          useCenter = true,
+          topLeft = Offset(w * 0.25f, h * 0.25f),
+          size = Size(w * 0.50f, h * 0.50f)
+        )
+      }
+
+      AppearanceCanvasIcon.ORIENTATION -> {
+        drawRoundRect(
+          color = tint,
+          topLeft = Offset(w * 0.28f, h * 0.16f),
+          size = Size(w * 0.44f, h * 0.68f),
+          cornerRadius = CornerRadius(2.4.dp.toPx(), 2.4.dp.toPx()),
+          style = stroke
+        )
+        val arcPath = Path().apply {
+          moveTo(w * 0.14f, h * 0.46f)
+          quadraticTo(w * 0.12f, h * 0.72f, w * 0.32f, h * 0.84f)
+        }
+        drawPath(arcPath, color = accentTint, style = stroke)
+        val arrowTip = Path().apply {
+          moveTo(w * 0.10f, h * 0.37f)
+          lineTo(w * 0.14f, h * 0.48f)
+          lineTo(w * 0.24f, h * 0.42f)
+        }
+        drawPath(arrowTip, color = accentTint, style = stroke)
+      }
+
+      AppearanceCanvasIcon.TIME -> {
+        val center = Offset(w * 0.5f, h * 0.53f)
+        drawCircle(
+          color = tint,
+          radius = w * 0.34f,
+          center = center,
+          style = stroke
+        )
+        drawLine(
+          color = accentTint,
+          start = Offset(w * 0.39f, h * 0.12f),
+          end = Offset(w * 0.61f, h * 0.12f),
+          strokeWidth = strokePx,
+          cap = StrokeCap.Round
+        )
+        drawLine(
+          color = tint,
+          start = center,
+          end = Offset(w * 0.50f, h * 0.34f),
+          strokeWidth = strokePx,
+          cap = StrokeCap.Round
+        )
+        drawLine(
+          color = accentTint,
+          start = center,
+          end = Offset(w * 0.67f, h * 0.58f),
+          strokeWidth = strokePx,
+          cap = StrokeCap.Round
+        )
+      }
+
+      AppearanceCanvasIcon.MORE_TUNE -> {
+        val ys = listOf(h * 0.26f, h * 0.50f, h * 0.74f)
+        val nodes = listOf(w * 0.64f, w * 0.36f, w * 0.58f)
+        ys.forEachIndexed { i, y ->
+          drawLine(
+            color = tint.copy(alpha = 0.75f),
+            start = Offset(w * 0.14f, y),
+            end = Offset(w * 0.86f, y),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+          drawCircle(
+            color = accentTint,
+            radius = 2.4.dp.toPx(),
+            center = Offset(nodes[i], y)
+          )
+        }
+      }
+
+      AppearanceCanvasIcon.CHEVRON_DOWN -> {
+        val path = Path().apply {
+          moveTo(w * 0.24f, h * 0.38f)
+          lineTo(w * 0.50f, h * 0.64f)
+          lineTo(w * 0.76f, h * 0.38f)
+        }
+        drawPath(path, color = tint, style = stroke)
+      }
+    }
+  }
+}
+
+@Composable
+private fun AppearanceSectionCard(
+  title: String,
+  icon: AppearanceCanvasIcon,
+  trailingBadge: String? = null,
+  cardTag: String,
+  content: @Composable () -> Unit
+) {
+  Surface(
+    color = MaterialTheme.colorScheme.surfaceContainerLow,
+    shape = RoundedCornerShape(18.dp),
+    modifier = Modifier
+      .fillMaxWidth()
+      .border(
+        width = 1.dp,
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+        shape = RoundedCornerShape(18.dp)
+      )
+      .testTag(cardTag)
+  ) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          AppearanceCustomIcon(
+            type = icon,
+            tint = MaterialTheme.colorScheme.onSurface,
+            accentTint = MaterialTheme.colorScheme.primary
+          )
+          Spacer(Modifier.width(8.dp))
+          Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface
+          )
+        }
+        if (!trailingBadge.isNullOrBlank()) {
+          Text(
+            text = trailingBadge,
+            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
+            color = MaterialTheme.colorScheme.primary
+          )
+        }
+      }
+      Spacer(Modifier.height(12.dp))
+      content()
+    }
+  }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -102,359 +349,408 @@ fun ReaderAppearanceSheet(
   onSelectSleepTimerMinutes: (Int) -> Unit,
   onDismiss: () -> Unit
 ) {
-  ModalBottomSheet(onDismissRequest = onDismiss) {
+  var showMoreSettings by remember { mutableStateOf(false) }
+  val chevronRotation by animateFloatAsState(
+    targetValue = if (showMoreSettings) 180f else 0f,
+    label = "more_settings_chevron"
+  )
+
+  ModalBottomSheet(
+    onDismissRequest = onDismiss,
+    containerColor = MaterialTheme.colorScheme.surface,
+    contentColor = MaterialTheme.colorScheme.onSurface
+  ) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
         .verticalScroll(rememberScrollState())
-        .padding(horizontal = 24.dp)
-        .padding(bottom = 32.dp)
+        .padding(horizontal = 20.dp)
+        .padding(bottom = 28.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
       Text(
         text = "Apariencia y controles",
         style = MaterialTheme.typography.headlineSmall.copy(fontFamily = PlayfairDisplayFamily)
       )
-      Spacer(Modifier.height(16.dp))
 
-      Text(
-        text = "PAPEL Y CONTRASTE",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.primary
-      )
-      Spacer(Modifier.height(8.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      // 1. Tarjeta Página (tema, tipografía, tamaño)
+      AppearanceSectionCard(
+        title = "Página",
+        icon = AppearanceCanvasIcon.PAGE,
+        trailingBadge = if (format == BookFormat.EPUB) "${preferences.fontSizeSp.roundToInt()} pt" else null,
+        cardTag = "appearance_card_page"
       ) {
-        ReaderTheme.entries.forEach { theme ->
-          val palette = theme.colors()
-          val selected = preferences.readerTheme == theme
-          Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-              .weight(1f)
-              .clip(RoundedCornerShape(14.dp))
-              .background(palette.background)
-              .border(
-                width = if (selected) 2.5.dp else 1.dp,
-                color = if (selected) MaterialTheme.colorScheme.primary else palette.divider,
-                shape = RoundedCornerShape(14.dp)
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          ReaderTheme.entries.forEach { theme ->
+            val palette = theme.colors()
+            val selected = preferences.readerTheme == theme
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(palette.background)
+                .border(
+                  width = if (selected) 2.2.dp else 1.dp,
+                  color = if (selected) MaterialTheme.colorScheme.primary else palette.divider,
+                  shape = RoundedCornerShape(12.dp)
+                )
+                .clickable { onSelectTheme(theme) }
+                .padding(vertical = 10.dp)
+                .testTag("reader_theme_${theme.name.lowercase()}")
+            ) {
+              Text(
+                text = "Aa",
+                fontFamily = PlayfairDisplayFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                color = palette.text
               )
-              .clickable { onSelectTheme(theme) }
-              .padding(vertical = 12.dp)
-              .testTag("reader_theme_${theme.name.lowercase()}")
-          ) {
-            Text(
-              text = "Aa",
-              fontFamily = PlayfairDisplayFamily,
-              fontWeight = FontWeight.Bold,
-              fontSize = 18.sp,
-              color = palette.text
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-              text = theme.label,
-              style = MaterialTheme.typography.labelSmall,
-              color = palette.secondaryText
-            )
+              Spacer(Modifier.height(2.dp))
+              Text(
+                text = theme.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.secondaryText
+              )
+            }
           }
         }
-      }
 
-      // Reader Brightness Control
-      Spacer(Modifier.height(18.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        Text(
-          text = "CONTROL DE BRILLO",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-          text = if (preferences.readerBrightness < 0f) "Sistema"
-          else "${(preferences.readerBrightness * 100f).roundToInt()}%",
-          style = MaterialTheme.typography.labelMedium,
-          color = MaterialTheme.colorScheme.primary
-        )
-      }
-      Spacer(Modifier.height(4.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-      ) {
-        FilterChip(
-          selected = preferences.readerBrightness < 0f,
-          onClick = { onBrightnessChange(-1f) },
-          label = { Text("Auto") },
-          leadingIcon = {
-            Icon(Icons.Default.BrightnessAuto, contentDescription = null, modifier = Modifier.size(16.dp))
-          },
-          modifier = Modifier.testTag("reader_brightness_auto")
-        )
-        Slider(
-          value = if (preferences.readerBrightness < 0f) 0.5f else preferences.readerBrightness,
-          onValueChange = { onBrightnessChange(it.coerceIn(0.05f, 1.0f)) },
-          valueRange = 0.05f..1.0f,
-          modifier = Modifier
-            .weight(1f)
-            .testTag("reader_brightness_slider")
-        )
-      }
+        if (format == BookFormat.EPUB) {
+          Spacer(Modifier.height(14.dp))
+          Text(
+            text = "TIPOGRAFÍA",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+          Spacer(Modifier.height(6.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            ReaderFont.entries.forEach { font ->
+              FilterChip(
+                selected = preferences.readerFont == font,
+                onClick = { onSelectFont(font) },
+                label = { Text(font.label, maxLines = 1) },
+                modifier = Modifier
+                  .weight(1f)
+                  .testTag("reader_font_${font.name.lowercase()}")
+              )
+            }
+          }
 
-      // Orientation Lock
-      Spacer(Modifier.height(14.dp))
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-          Icons.Default.ScreenLockRotation,
-          contentDescription = null,
-          tint = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.size(16.dp)
-        )
-        Spacer(Modifier.width(6.dp))
-        Text(
-          text = "BLOQUEO DE ORIENTACIÓN",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.primary
-        )
-      }
-      Spacer(Modifier.height(8.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-      ) {
-        OrientationLockMode.entries.forEach { mode ->
-          FilterChip(
-            selected = preferences.orientationLock == mode,
-            onClick = { onOrientationLockChange(mode) },
-            label = { Text(mode.label, maxLines = 1) },
-            modifier = Modifier
-              .weight(1f)
-              .testTag("reader_orientation_${mode.name.lowercase()}")
+          Spacer(Modifier.height(10.dp))
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = "TAMAÑO DE LETRA",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+              text = "${preferences.fontSizeSp.roundToInt()} pt",
+              style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
+              color = MaterialTheme.colorScheme.primary
+            )
+          }
+          LettorThinSlider(
+            value = preferences.fontSizeSp,
+            onValueChange = onFontSizeChange,
+            valueRange = 14f..28f,
+            steps = 13,
+            modifier = Modifier.testTag("reader_font_size_slider")
           )
         }
       }
 
-      // Sleep Timer
-      Spacer(Modifier.height(16.dp))
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+      // 2. Tarjeta Luz (brillo con regla + orientación)
+      AppearanceSectionCard(
+        title = "Luz",
+        icon = AppearanceCanvasIcon.LIGHT,
+        trailingBadge = if (preferences.readerBrightness < 0f) "Auto" else "${(preferences.readerBrightness * 100f).roundToInt()}%",
+        cardTag = "appearance_card_light"
       ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+          FilterChip(
+            selected = preferences.readerBrightness < 0f,
+            onClick = { onBrightnessChange(-1f) },
+            label = { Text("Auto") },
+            leadingIcon = {
+              AppearanceCustomIcon(
+                type = AppearanceCanvasIcon.AUTO_LIGHT,
+                tint = if (preferences.readerBrightness < 0f) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                accentTint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+              )
+            },
+            modifier = Modifier.testTag("reader_brightness_auto")
+          )
+          LettorRulerBrightnessSlider(
+            value = if (preferences.readerBrightness < 0f) 0.5f else preferences.readerBrightness,
+            onValueChange = { onBrightnessChange(it.coerceIn(0.05f, 1.0f)) },
+            valueRange = 0.05f..1.0f,
+            isAuto = preferences.readerBrightness < 0f,
+            modifier = Modifier
+              .weight(1f)
+              .testTag("reader_brightness_slider")
+          )
+        }
+
+        Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(
-            Icons.Default.Timer,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(16.dp)
+          AppearanceCustomIcon(
+            type = AppearanceCanvasIcon.ORIENTATION,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            accentTint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(15.dp)
           )
           Spacer(Modifier.width(6.dp))
           Text(
-            text = "TEMPORIZADOR DE LECTURA",
+            text = "ORIENTACIÓN",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.onSurfaceVariant
           )
         }
-        if (sleepTimerRemainingSeconds > 0) {
-          val mins = sleepTimerRemainingSeconds / 60
-          val secs = sleepTimerRemainingSeconds % 60
-          Text(
-            text = String.format(java.util.Locale.US, "%02d:%02d", mins, secs),
-            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
-            color = MaterialTheme.colorScheme.primary
-          )
-        }
-      }
-      Spacer(Modifier.height(8.dp))
-      FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-      ) {
-        listOf(0 to "Apagado", 5 to "5 min", 10 to "10 min", 15 to "15 min", 30 to "30 min", 60 to "60 min").forEach { (mins, label) ->
-          val active = (mins == 0 && sleepTimerRemainingSeconds == 0) ||
-            (mins > 0 && sleepTimerRemainingSeconds in ((mins - 1) * 60 + 1)..(mins * 60))
-          FilterChip(
-            selected = active,
-            onClick = { onSelectSleepTimerMinutes(mins) },
-            label = { Text(label) },
-            modifier = Modifier.testTag("sleep_timer_$mins")
-          )
-        }
-      }
-
-      if (format == BookFormat.EPUB) {
-        Spacer(Modifier.height(20.dp))
-        Text(
-          text = "TIPOGRAFÍA",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-          ReaderFont.entries.forEach { font ->
+          OrientationLockMode.entries.forEach { mode ->
             FilterChip(
-              selected = preferences.readerFont == font,
-              onClick = { onSelectFont(font) },
-              label = { Text(font.label, maxLines = 1) },
+              selected = preferences.orientationLock == mode,
+              onClick = { onOrientationLockChange(mode) },
+              label = { Text(mode.label, maxLines = 1) },
               modifier = Modifier
                 .weight(1f)
-                .testTag("reader_font_${font.name.lowercase()}")
+                .testTag("reader_orientation_${mode.name.lowercase()}")
             )
           }
         }
+      }
 
-        Spacer(Modifier.height(16.dp))
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text(
-            text = "TAMAÑO DE LETRA",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary
-          )
-          Text(
-            text = "${preferences.fontSizeSp.roundToInt()} pt",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary
-          )
-        }
-        Slider(
-          value = preferences.fontSizeSp,
-          onValueChange = onFontSizeChange,
-          valueRange = 14f..28f,
-          steps = 13,
-          modifier = Modifier.testTag("reader_font_size_slider")
-        )
-
-        Spacer(Modifier.height(12.dp))
-        Text(
-          text = "INTERLINEADO",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          listOf(
-            "Compacto" to 1.35f,
-            "Cómodo" to 1.55f,
-            "Amplio" to 1.8f
-          ).forEach { (label, mult) ->
-            val selected = kotlin.math.abs(preferences.lineHeightMultiplier - mult) < 0.08f
-            FilterChip(
-              selected = selected,
-              onClick = { onLineHeightChange(mult) },
-              label = { Text(label) },
-              modifier = Modifier.weight(1f)
-            )
-          }
-        }
-
-        Spacer(Modifier.height(12.dp))
-        Text(
-          text = "MÁRGENES",
-          style = MaterialTheme.typography.labelSmall,
-          color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-          listOf(
-            "Estrecho" to 14,
-            "Normal" to 22,
-            "Amplio" to 32
-          ).forEach { (label, dpVal) ->
-            val selected = kotlin.math.abs(preferences.horizontalPaddingDp - dpVal) <= 3
-            FilterChip(
-              selected = selected,
-              onClick = { onPaddingChange(dpVal) },
-              label = { Text(label) },
-              modifier = Modifier.weight(1f)
-            )
-          }
-        }
-
-        Spacer(Modifier.height(14.dp))
-        HorizontalDivider()
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onToggleScrollMode(!preferences.epubScrollMode) }
-            .padding(vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Desplazamiento vertical continuo", style = MaterialTheme.typography.titleSmall)
-            Text(
-              "Cambia entre pasar páginas horizontales o hacer scroll",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-          }
-          Switch(
-            checked = preferences.epubScrollMode,
-            onCheckedChange = onToggleScrollMode,
-            modifier = Modifier.testTag("reader_epub_scroll_switch")
-          )
-        }
+      // 3. Tarjeta Tiempo (temporizador)
+      val activeTimerBadge = if (sleepTimerRemainingSeconds > 0) {
+        val mins = sleepTimerRemainingSeconds / 60
+        val secs = sleepTimerRemainingSeconds % 60
+        String.format(java.util.Locale.US, "%02d:%02d", mins, secs)
       } else {
-        Spacer(Modifier.height(18.dp))
-        HorizontalDivider()
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onToggleScrollMode(!preferences.pdfScrollMode) }
-            .padding(vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically
+        "Apagado"
+      }
+      AppearanceSectionCard(
+        title = "Tiempo",
+        icon = AppearanceCanvasIcon.TIME,
+        trailingBadge = activeTimerBadge,
+        cardTag = "appearance_card_time"
+      ) {
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Desplazamiento vertical continuo", style = MaterialTheme.typography.titleSmall)
-            Text(
-              "Desliza las páginas hacia abajo en lugar de pasar lateralmente",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant
+          listOf(0 to "Apagado", 5 to "5 min", 10 to "10 min", 15 to "15 min", 30 to "30 min", 60 to "60 min").forEach { (mins, label) ->
+            val active = (mins == 0 && sleepTimerRemainingSeconds == 0) ||
+              (mins > 0 && sleepTimerRemainingSeconds in ((mins - 1) * 60 + 1)..(mins * 60))
+            FilterChip(
+              selected = active,
+              onClick = { onSelectSleepTimerMinutes(mins) },
+              label = { Text(label) },
+              modifier = Modifier.testTag("sleep_timer_$mins")
             )
           }
-          Switch(
-            checked = preferences.pdfScrollMode,
-            onCheckedChange = onToggleScrollMode,
-            modifier = Modifier.testTag("reader_pdf_scroll_switch")
-          )
         }
+      }
 
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onTogglePdfNightFilter(!preferences.pdfNightFilter) }
-            .padding(vertical = 12.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Filtro nocturno en PDF", style = MaterialTheme.typography.titleSmall)
-            Text(
-              "Invierte el brillo del PDF cuando lees en Noche o Ébano",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant
+      // Bloque colapsable: Más ajustes (Interlineado, Márgenes y modos de lectura)
+      Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .border(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+            shape = RoundedCornerShape(18.dp)
+          )
+      ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { showMoreSettings = !showMoreSettings }
+              .padding(horizontal = 16.dp, vertical = 14.dp)
+              .testTag("appearance_more_settings_toggle"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              AppearanceCustomIcon(
+                type = AppearanceCanvasIcon.MORE_TUNE,
+                tint = MaterialTheme.colorScheme.onSurface,
+                accentTint = MaterialTheme.colorScheme.primary
+              )
+              Spacer(Modifier.width(8.dp))
+              Text(
+                text = "Más ajustes",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+              )
+            }
+            AppearanceCustomIcon(
+              type = AppearanceCanvasIcon.CHEVRON_DOWN,
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              accentTint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.rotate(chevronRotation)
             )
           }
-          Switch(
-            checked = preferences.pdfNightFilter,
-            onCheckedChange = onTogglePdfNightFilter,
-            modifier = Modifier.testTag("reader_pdf_night_switch")
-          )
+
+          AnimatedVisibility(
+            visible = showMoreSettings,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 14.dp)
+                .testTag("appearance_more_settings_content")
+            ) {
+              HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+              Spacer(Modifier.height(12.dp))
+
+              if (format == BookFormat.EPUB) {
+                Text(
+                  text = "INTERLINEADO",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  listOf(
+                    "Compacto" to 1.35f,
+                    "Cómodo" to 1.55f,
+                    "Amplio" to 1.8f
+                  ).forEach { (label, mult) ->
+                    val selected = kotlin.math.abs(preferences.lineHeightMultiplier - mult) < 0.08f
+                    FilterChip(
+                      selected = selected,
+                      onClick = { onLineHeightChange(mult) },
+                      label = { Text(label) },
+                      modifier = Modifier.weight(1f)
+                    )
+                  }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Text(
+                  text = "MÁRGENES",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                  listOf(
+                    "Estrecho" to 14,
+                    "Normal" to 22,
+                    "Amplio" to 32
+                  ).forEach { (label, dpVal) ->
+                    val selected = kotlin.math.abs(preferences.horizontalPaddingDp - dpVal) <= 3
+                    FilterChip(
+                      selected = selected,
+                      onClick = { onPaddingChange(dpVal) },
+                      label = { Text(label) },
+                      modifier = Modifier.weight(1f)
+                    )
+                  }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleScrollMode(!preferences.epubScrollMode) }
+                    .padding(top = 10.dp, bottom = 2.dp),
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text("Desplazamiento vertical continuo", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                      "Cambia entre pasar páginas horizontales o hacer scroll",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  }
+                  Switch(
+                    checked = preferences.epubScrollMode,
+                    onCheckedChange = onToggleScrollMode,
+                    modifier = Modifier.testTag("reader_epub_scroll_switch")
+                  )
+                }
+              } else {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleScrollMode(!preferences.pdfScrollMode) }
+                    .padding(vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text("Desplazamiento vertical continuo", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                      "Desliza las páginas hacia abajo en lugar de pasar lateralmente",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  }
+                  Switch(
+                    checked = preferences.pdfScrollMode,
+                    onCheckedChange = onToggleScrollMode,
+                    modifier = Modifier.testTag("reader_pdf_scroll_switch")
+                  )
+                }
+
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onTogglePdfNightFilter(!preferences.pdfNightFilter) }
+                    .padding(vertical = 8.dp),
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text("Filtro nocturno en PDF", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                      "Invierte el brillo del PDF cuando lees en Noche o Ébano",
+                      style = MaterialTheme.typography.bodySmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  }
+                  Switch(
+                    checked = preferences.pdfNightFilter,
+                    onCheckedChange = onTogglePdfNightFilter,
+                    modifier = Modifier.testTag("reader_pdf_night_switch")
+                  )
+                }
+              }
+            }
+          }
         }
       }
     }

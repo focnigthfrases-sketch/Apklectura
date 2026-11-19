@@ -32,7 +32,7 @@ class LettorTypeConverters {
     HighlightEntity::class,
     VocabularyEntity::class
   ],
-  version = 2,
+  version = 3,
   exportSchema = false
 )
 @TypeConverters(LettorTypeConverters::class)
@@ -88,6 +88,14 @@ abstract class LettorDatabase : RoomDatabase() {
       }
     }
 
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE highlights ADD COLUMN endBlockIndex INTEGER NOT NULL DEFAULT -1")
+        db.execSQL("ALTER TABLE highlights ADD COLUMN startCharOffset INTEGER NOT NULL DEFAULT -1")
+        db.execSQL("ALTER TABLE highlights ADD COLUMN endCharOffset INTEGER NOT NULL DEFAULT -1")
+      }
+    }
+
     fun getInstance(context: Context): LettorDatabase {
       return INSTANCE ?: synchronized(this) {
         INSTANCE ?: Room.databaseBuilder(
@@ -95,7 +103,7 @@ abstract class LettorDatabase : RoomDatabase() {
           LettorDatabase::class.java,
           "lettor_library.db"
         )
-          .addMigrations(MIGRATION_1_2)
+          .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
           .build()
           .also { INSTANCE = it }
       }

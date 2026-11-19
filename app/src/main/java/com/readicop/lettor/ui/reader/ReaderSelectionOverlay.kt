@@ -287,22 +287,39 @@ private fun SelectionFloatingMenu(
   var menuSize by remember { mutableStateOf(IntSize.Zero) }
 
   val edgeMarginPx = with(density) { 10.dp.toPx() }
-  val gapAbovePx = with(density) { 14.dp.toPx() }
-  val gapBelowPx = with(density) { 26.dp.toPx() }
+  val selectionGapPx = with(density) { 12.dp.toPx() }
+  val tightGapPx = with(density) { 4.dp.toPx() }
 
   val minX = edgeMarginPx
   val maxX = (containerSize.width - menuSize.width - edgeMarginPx).coerceAtLeast(minX)
   val rawX = selectionBounds.center.x - menuSize.width * 0.5f
   val clampedX = rawX.coerceIn(minX, maxX)
 
-  val minY = (topSafeInsetPx + edgeMarginPx).coerceAtLeast(edgeMarginPx)
-  val maxY = (containerSize.height - menuSize.height - bottomSafeInsetPx - edgeMarginPx).coerceAtLeast(minY)
-  val aboveY = selectionBounds.top - menuSize.height - gapAbovePx
-  val belowY = selectionBounds.bottom + gapBelowPx
-  val targetY = if (aboveY >= minY) {
-    aboveY.coerceIn(minY, maxY)
-  } else {
-    belowY.coerceIn(minY, maxY)
+  val menuH = menuSize.height.toFloat()
+  val topLimit = (topSafeInsetPx + edgeMarginPx).coerceAtLeast(edgeMarginPx)
+  val bottomLimit = (containerSize.height - bottomSafeInsetPx - edgeMarginPx - menuH).coerceAtLeast(topLimit)
+
+  val aboveY = selectionBounds.top - selectionGapPx - menuH
+  val belowY = selectionBounds.bottom + selectionGapPx
+
+  val tightTopEdge = (topSafeInsetPx + tightGapPx).coerceAtLeast(tightGapPx)
+  val tightBottomEdge = (containerSize.height - bottomSafeInsetPx - tightGapPx - menuH)
+    .coerceAtLeast(tightTopEdge)
+  val rawTopEdge = tightGapPx
+  val rawBottomEdge = (containerSize.height - tightGapPx - menuH).coerceAtLeast(rawTopEdge)
+
+  val targetY = when {
+    // 1. Above selection with margin
+    aboveY >= topLimit -> aboveY
+    // 2. Below selection with margin
+    belowY <= bottomLimit -> belowY
+    // 3. Screen edge without overlapping selection
+    tightTopEdge + menuH <= selectionBounds.top - tightGapPx -> tightTopEdge
+    tightBottomEdge >= selectionBounds.bottom + tightGapPx -> tightBottomEdge
+    rawTopEdge + menuH <= selectionBounds.top - tightGapPx -> rawTopEdge
+    rawBottomEdge >= selectionBounds.bottom + tightGapPx -> rawBottomEdge
+    // Selection covers entire viewport height: pin to edge farthest from vertical center
+    else -> if (selectionBounds.center.y >= containerSize.height * 0.5f) topLimit else bottomLimit
   }
 
   val menuShape = RoundedCornerShape(16.dp)
@@ -319,6 +336,7 @@ private fun SelectionFloatingMenu(
     modifier = Modifier
       .offset { IntOffset(clampedX.roundToInt(), targetY.roundToInt()) }
       .onSizeChanged { menuSize = it }
+      .alpha(if (menuSize.width > 0 && menuSize.height > 0) 1f else 0f)
       .border(1.dp, borderColor, menuShape)
       .testTag("selection_floating_menu")
   ) {

@@ -61,6 +61,9 @@ data class BackupHighlightRecord(
   val originalBookId: Long,
   val unitIndex: Int,
   val blockIndex: Int,
+  val endBlockIndex: Int = -1,
+  val startCharOffset: Int = -1,
+  val endCharOffset: Int = -1,
   val excerpt: String,
   val stickyNote: String,
   val color: String,
@@ -164,7 +167,19 @@ class BackupManager(
           BackupBookmarkRecord(it.bookId, it.unitIndex, it.subOffset, it.label, it.excerpt, it.note, it.createdAt)
         },
         highlights = highlights.map {
-          BackupHighlightRecord(it.bookId, it.unitIndex, it.blockIndex, it.excerpt, it.stickyNote, it.color.name, it.isStickyNoteOnly, it.createdAt)
+          BackupHighlightRecord(
+            originalBookId = it.bookId,
+            unitIndex = it.unitIndex,
+            blockIndex = it.blockIndex,
+            endBlockIndex = it.endBlockIndex,
+            startCharOffset = it.startCharOffset,
+            endCharOffset = it.endCharOffset,
+            excerpt = it.excerpt,
+            stickyNote = it.stickyNote,
+            color = it.color.name,
+            isStickyNoteOnly = it.isStickyNoteOnly,
+            createdAt = it.createdAt
+          )
         },
         vocabulary = vocabulary.map {
           BackupVocabularyRecord(it.word, it.normalizedWord, it.partOfSpeech, it.definition, it.translation, it.bookTitle, it.contextSnippet, it.isMastered, it.createdAt)
@@ -294,6 +309,9 @@ class BackupManager(
               bookId = mappedBookId,
               unitIndex = hl.unitIndex,
               blockIndex = hl.blockIndex,
+              endBlockIndex = hl.endBlockIndex,
+              startCharOffset = hl.startCharOffset,
+              endCharOffset = hl.endCharOffset,
               excerpt = hl.excerpt,
               stickyNote = hl.stickyNote,
               color = runCatching { HighlightColor.valueOf(hl.color) }.getOrDefault(HighlightColor.AMBER),

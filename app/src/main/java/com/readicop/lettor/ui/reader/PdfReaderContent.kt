@@ -216,7 +216,7 @@ private fun computePdfSelectionGeometry(
   pageText: PdfPageTextData?,
   metrics: PdfPageRenderMetrics?,
   overlayContainerPosInRoot: Offset,
-  dotDropPx: Float
+  handleHorizontalOffsetPx: Float
 ): PdfSelectionGeometry {
   if (selection == null || pageText == null || pageText.isScanned || metrics == null) {
     return PdfSelectionGeometry(null, null, null)
@@ -235,12 +235,15 @@ private fun computePdfSelectionGeometry(
   val wordB = words[idxB]
 
   val normAX = if (isAStart) wordA.rect.left else wordA.rect.right
-  val normAY = wordA.rect.bottom
+  val normAY = (wordA.rect.top + wordA.rect.bottom) * 0.5f
   val normBX = if (isAStart) wordB.rect.right else wordB.rect.left
-  val normBY = wordB.rect.bottom
+  val normBY = (wordB.rect.top + wordB.rect.bottom) * 0.5f
 
-  val anchorAPos = pdfNormToOverlayPoint(normAX, normAY, metrics, overlayContainerPosInRoot) + Offset(0f, dotDropPx)
-  val anchorBPos = pdfNormToOverlayPoint(normBX, normBY, metrics, overlayContainerPosInRoot) + Offset(0f, dotDropPx)
+  val offsetAX = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
+  val offsetBX = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
+
+  val anchorAPos = pdfNormToOverlayPoint(normAX, normAY, metrics, overlayContainerPosInRoot) + Offset(offsetAX, 0f)
+  val anchorBPos = pdfNormToOverlayPoint(normBX, normBY, metrics, overlayContainerPosInRoot) + Offset(offsetBX, 0f)
 
   val s = minOf(idxA, idxB)
   val e = maxOf(idxA, idxB)
@@ -282,7 +285,7 @@ fun PdfReaderContent(
   autoScrollSpeed: Float = 1.2f,
   topOverlayClearanceDp: androidx.compose.ui.unit.Dp = 0.dp,
   onToggleControls: () -> Unit,
-  onOpenFragmentTools: (pageIndex: Int, text: String) -> Unit = { _, _ -> },
+  onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit = { _, _, _, _ -> },
   onCopyPlainText: (String) -> Unit = {},
   onCopyCitation: (text: String, locationLabel: String) -> Unit = { _, _ -> },
   onShareSelection: (text: String, locationLabel: String) -> Unit = { _, _ -> },
@@ -375,7 +378,7 @@ private fun PdfPaginatedReader(
   notesByPage: Map<Int, List<HighlightEntity>>,
   topOverlayClearanceDp: androidx.compose.ui.unit.Dp,
   onToggleControls: () -> Unit,
-  onOpenFragmentTools: (pageIndex: Int, text: String) -> Unit,
+  onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit,
   onCopyPlainText: (String) -> Unit,
   onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
@@ -396,7 +399,7 @@ private fun PdfPaginatedReader(
   var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
-  val dotDropPx = with(density) { 7.dp.toPx() }
+  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
   val topSafePx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let {
     with(density) { (it + topOverlayClearanceDp).toPx() }
   }
@@ -470,7 +473,7 @@ private fun PdfPaginatedReader(
               val noteExcerpt = notesByPage[pageIdx]?.firstOrNull()?.excerpt
                 ?.takeIf { it.isNotBlank() }
                 ?: "$bookTitle · Página ${pageIdx + 1}"
-              onOpenFragmentTools(pageIdx, noteExcerpt)
+              onOpenFragmentTools(pageIdx, -1, -1, noteExcerpt)
             },
             onSelectWord = { wordIdx ->
               val data = pageTextCache[pageIdx]
@@ -524,9 +527,10 @@ private fun PdfPaginatedReader(
         pageText = activePageText,
         metrics = activeMetrics,
         overlayContainerPosInRoot = overlayContainerPosInRoot,
-        dotDropPx = dotDropPx
+        handleHorizontalOffsetPx = handleHorizontalOffsetPx
       )
       val locationLabel = "pág. ${sel.pageIndex + 1}"
+      val isAStart = sel.anchorWordA <= sel.anchorWordB
 
       if (selectedText.isNotEmpty()) {
         ReaderSelectionOverlay(
@@ -542,16 +546,16 @@ private fun PdfPaginatedReader(
           copyEnabled = !activePageText.isScanned,
           highlightEnabled = !activePageText.isScanned,
           onDragAnchorA = { ptr ->
-            val textHit = ptr - Offset(0f, dotDropPx)
-            val norm = overlayPointToPdfNorm(textHit, activeMetrics, overlayContainerPosInRoot)
+            val xAdj = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
+            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordA = hitWord)
             }
           },
           onDragAnchorB = { ptr ->
-            val textHit = ptr - Offset(0f, dotDropPx)
-            val norm = overlayPointToPdfNorm(textHit, activeMetrics, overlayContainerPosInRoot)
+            val xAdj = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
+            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordB = hitWord)
@@ -571,7 +575,7 @@ private fun PdfPaginatedReader(
           },
           onHighlight = {
             if (!activePageText.isScanned) {
-              onOpenFragmentTools(sel.pageIndex, selectedText)
+              onOpenFragmentTools(sel.pageIndex, sel.startWord, sel.endWord + 1, selectedText)
               activeSelection = null
             }
           },
@@ -773,23 +777,45 @@ private fun PdfSinglePageView(
 
           val sel = activeSelection
           val data = pageText
-          if (sel != null && data != null && !data.isScanned && data.words.isNotEmpty()) {
-            val s = sel.startWord.coerceIn(0, data.words.lastIndex)
-            val e = sel.endWord.coerceIn(s, data.words.lastIndex)
+          val savedHighlights = remember(pageNotes) {
+            pageNotes.filter { !it.isStickyNoteOnly && it.startCharOffset >= 0 && it.endCharOffset > it.startCharOffset }
+          }
+          if (data != null && !data.isScanned && data.words.isNotEmpty() && (sel != null || savedHighlights.isNotEmpty())) {
             val highlightTint = surfaceColors.accent.copy(alpha = 0.30f)
 
             Canvas(modifier = Modifier.fillMaxSize()) {
-              for (idx in s..e) {
-                val r = data.words[idx].rect
-                drawRoundRect(
-                  color = highlightTint,
-                  topLeft = Offset(r.left * size.width, r.top * size.height),
-                  size = Size(
-                    width = (r.width * size.width).coerceAtLeast(2f),
-                    height = (r.height * size.height).coerceAtLeast(2f)
-                  ),
-                  cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
-                )
+              for (hl in savedHighlights) {
+                val hlTint = if (surfaceColors.isDark) hl.color.washDark else hl.color.washLight
+                val hs = hl.startCharOffset.coerceIn(0, data.words.lastIndex)
+                val he = (hl.endCharOffset - 1).coerceIn(hs, data.words.lastIndex)
+                for (idx in hs..he) {
+                  val r = data.words[idx].rect
+                  drawRoundRect(
+                    color = hlTint,
+                    topLeft = Offset(r.left * size.width, r.top * size.height),
+                    size = Size(
+                      width = (r.width * size.width).coerceAtLeast(2f),
+                      height = (r.height * size.height).coerceAtLeast(2f)
+                    ),
+                    cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                  )
+                }
+              }
+              if (sel != null) {
+                val s = sel.startWord.coerceIn(0, data.words.lastIndex)
+                val e = sel.endWord.coerceIn(s, data.words.lastIndex)
+                for (idx in s..e) {
+                  val r = data.words[idx].rect
+                  drawRoundRect(
+                    color = highlightTint,
+                    topLeft = Offset(r.left * size.width, r.top * size.height),
+                    size = Size(
+                      width = (r.width * size.width).coerceAtLeast(2f),
+                      height = (r.height * size.height).coerceAtLeast(2f)
+                    ),
+                    cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                  )
+                }
               }
             }
           }
@@ -841,7 +867,7 @@ private fun PdfScrollReader(
   autoScrollSpeed: Float,
   topOverlayClearanceDp: androidx.compose.ui.unit.Dp,
   onToggleControls: () -> Unit,
-  onOpenFragmentTools: (pageIndex: Int, text: String) -> Unit,
+  onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit,
   onCopyPlainText: (String) -> Unit,
   onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
@@ -861,7 +887,7 @@ private fun PdfScrollReader(
   var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
-  val dotDropPx = with(density) { 7.dp.toPx() }
+  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
   val topSafePx = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().let {
     with(density) { (it + topOverlayClearanceDp).toPx() }
   }
@@ -990,9 +1016,10 @@ private fun PdfScrollReader(
         pageText = activePageText,
         metrics = activeMetrics,
         overlayContainerPosInRoot = overlayContainerPosInRoot,
-        dotDropPx = dotDropPx
+        handleHorizontalOffsetPx = handleHorizontalOffsetPx
       )
       val locationLabel = "pág. ${sel.pageIndex + 1}"
+      val isAStart = sel.anchorWordA <= sel.anchorWordB
 
       if (selectedText.isNotEmpty()) {
         ReaderSelectionOverlay(
@@ -1008,16 +1035,16 @@ private fun PdfScrollReader(
           copyEnabled = !activePageText.isScanned,
           highlightEnabled = !activePageText.isScanned,
           onDragAnchorA = { ptr ->
-            val textHit = ptr - Offset(0f, dotDropPx)
-            val norm = overlayPointToPdfNorm(textHit, activeMetrics, overlayContainerPosInRoot)
+            val xAdj = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
+            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordA = hitWord)
             }
           },
           onDragAnchorB = { ptr ->
-            val textHit = ptr - Offset(0f, dotDropPx)
-            val norm = overlayPointToPdfNorm(textHit, activeMetrics, overlayContainerPosInRoot)
+            val xAdj = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
+            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordB = hitWord)
@@ -1037,7 +1064,7 @@ private fun PdfScrollReader(
           },
           onHighlight = {
             if (!activePageText.isScanned) {
-              onOpenFragmentTools(sel.pageIndex, selectedText)
+              onOpenFragmentTools(sel.pageIndex, sel.startWord, sel.endWord + 1, selectedText)
               activeSelection = null
             }
           },
@@ -1226,23 +1253,45 @@ private fun PdfScrollPageCard(
 
         val sel = activeSelection
         val data = pageText
-        if (sel != null && data != null && !data.isScanned && data.words.isNotEmpty()) {
-          val s = sel.startWord.coerceIn(0, data.words.lastIndex)
-          val e = sel.endWord.coerceIn(s, data.words.lastIndex)
+        val savedHighlights = remember(pageNotes) {
+          pageNotes.filter { !it.isStickyNoteOnly && it.startCharOffset >= 0 && it.endCharOffset > it.startCharOffset }
+        }
+        if (data != null && !data.isScanned && data.words.isNotEmpty() && (sel != null || savedHighlights.isNotEmpty())) {
           val highlightTint = surfaceColors.accent.copy(alpha = 0.30f)
 
           Canvas(modifier = Modifier.fillMaxSize()) {
-            for (idx in s..e) {
-              val r = data.words[idx].rect
-              drawRoundRect(
-                color = highlightTint,
-                topLeft = Offset(r.left * size.width, r.top * size.height),
-                size = Size(
-                  width = (r.width * size.width).coerceAtLeast(2f),
-                  height = (r.height * size.height).coerceAtLeast(2f)
-                ),
-                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
-              )
+            for (hl in savedHighlights) {
+              val hlTint = if (surfaceColors.isDark) hl.color.washDark else hl.color.washLight
+              val hs = hl.startCharOffset.coerceIn(0, data.words.lastIndex)
+              val he = (hl.endCharOffset - 1).coerceIn(hs, data.words.lastIndex)
+              for (idx in hs..he) {
+                val r = data.words[idx].rect
+                drawRoundRect(
+                  color = hlTint,
+                  topLeft = Offset(r.left * size.width, r.top * size.height),
+                  size = Size(
+                    width = (r.width * size.width).coerceAtLeast(2f),
+                    height = (r.height * size.height).coerceAtLeast(2f)
+                  ),
+                  cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                )
+              }
+            }
+            if (sel != null) {
+              val s = sel.startWord.coerceIn(0, data.words.lastIndex)
+              val e = sel.endWord.coerceIn(s, data.words.lastIndex)
+              for (idx in s..e) {
+                val r = data.words[idx].rect
+                drawRoundRect(
+                  color = highlightTint,
+                  topLeft = Offset(r.left * size.width, r.top * size.height),
+                  size = Size(
+                    width = (r.width * size.width).coerceAtLeast(2f),
+                    height = (r.height * size.height).coerceAtLeast(2f)
+                  ),
+                  cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                )
+              }
             }
           }
         }

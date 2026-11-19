@@ -59,7 +59,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -90,6 +89,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readicop.lettor.data.local.BookFormat
 import com.readicop.lettor.data.preferences.OrientationLockMode
 import com.readicop.lettor.domain.engine.EpubBlock
+import com.readicop.lettor.ui.components.LettorThinSlider
 import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
 import com.readicop.lettor.ui.theme.colors
 import java.util.Locale
@@ -98,6 +98,9 @@ import kotlinx.coroutines.launch
 
 private data class ActiveFragmentSelection(
   val blockIndex: Int,
+  val endBlockIndex: Int = blockIndex,
+  val startCharOffset: Int = -1,
+  val endCharOffset: Int = -1,
   val text: String,
   val spokenIndex: Int?
 )
@@ -300,11 +303,14 @@ fun ReaderScreen(
           topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onRequestImage = viewModel::requestEpubImage,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onOpenFragmentTools = { blockIdx, excerpt ->
+          onOpenFragmentTools = { startBlk, endBlk, startChar, endChar, excerpt ->
             activeFragment = ActiveFragmentSelection(
-              blockIndex = blockIdx,
+              blockIndex = startBlk,
+              endBlockIndex = endBlk,
+              startCharOffset = startChar,
+              endCharOffset = endChar,
               text = excerpt,
-              spokenIndex = spokenMap[blockIdx]
+              spokenIndex = spokenMap[startBlk]
             )
           },
           onCopyPlainText = copyPlainSelection,
@@ -329,9 +335,12 @@ fun ReaderScreen(
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
           topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onOpenFragmentTools = { pageIdx, excerpt ->
+          onOpenFragmentTools = { pageIdx, startWord, endWordExcl, excerpt ->
             activeFragment = ActiveFragmentSelection(
               blockIndex = -1,
+              endBlockIndex = -1,
+              startCharOffset = startWord,
+              endCharOffset = endWordExcl,
               text = excerpt.ifBlank { "${uiState.book?.title.orEmpty()} · Página ${pageIdx + 1}" },
               spokenIndex = null
             )
@@ -749,7 +758,7 @@ fun ReaderScreen(
               }
 
               if (totalUnits > 1) {
-                Slider(
+                LettorThinSlider(
                   value = sliderValue,
                   onValueChange = { sliderValue = it },
                   onValueChangeFinished = {
@@ -757,6 +766,8 @@ fun ReaderScreen(
                     viewModel.jumpToUnit(target)
                   },
                   valueRange = 0f..(totalUnits - 1).toFloat(),
+                  accentColor = surfaceColors.accent,
+                  trackColor = surfaceColors.divider,
                   modifier = Modifier
                     .weight(1f)
                     .testTag("reader_progress_slider")
@@ -860,10 +871,14 @@ fun ReaderScreen(
       bookAuthor = book?.author.orEmpty(),
       fragmentText = frag.text,
       blockIndex = frag.blockIndex,
+      hasHighlightableRange = frag.blockIndex >= 0 || (frag.startCharOffset >= 0 && frag.endCharOffset > frag.startCharOffset),
       onSaveHighlight = { note, color, isStickyOnly ->
         viewModel.saveHighlightOrStickyNote(
           unitIndex = uiState.currentUnit,
           blockIndex = frag.blockIndex,
+          endBlockIndex = frag.endBlockIndex,
+          startCharOffset = frag.startCharOffset,
+          endCharOffset = frag.endCharOffset,
           excerpt = frag.text,
           stickyNote = note,
           color = color,
