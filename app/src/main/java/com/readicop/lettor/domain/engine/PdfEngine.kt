@@ -31,6 +31,104 @@ data class PdfNormalizedRect(
   val height: Float get() = (bottom - top).coerceAtLeast(0f)
   val centerX: Float get() = (left + right) * 0.5f
   val centerY: Float get() = (top + bottom) * 0.5f
+
+  fun contains(other: PdfNormalizedRect, epsilon: Float = 0.004f): Boolean =
+    left <= other.left + epsilon &&
+      top <= other.top + epsilon &&
+      right >= other.right - epsilon &&
+      bottom >= other.bottom - epsilon
+}
+
+data class PdfZoomTile(
+  val pageIndex: Int,
+  val region: PdfNormalizedRect,
+  val renderedScale: Float,
+  val bitmap: Bitmap
+)
+
+fun computePdfZoomTileRegion(
+  viewportWidthPx: Float,
+  viewportHeightPx: Float,
+  pageWidthPx: Float,
+  pageHeightPx: Float,
+  scale: Float,
+  panOffsetX: Float,
+  panOffsetY: Float,
+  overscanFraction: Float = 0.16f
+): PdfNormalizedRect? {
+  if (viewportWidthPx <= 0f || viewportHeightPx <= 0f || pageWidthPx <= 0f || pageHeightPx <= 0f || scale <= 1.05f) {
+    return null
+  }
+  val vx0 = (0f - viewportWidthPx * 0.5f - panOffsetX) / scale
+  val vy0 = (0f - viewportHeightPx * 0.5f - panOffsetY) / scale
+  val vx1 = (viewportWidthPx - viewportWidthPx * 0.5f - panOffsetX) / scale
+  val vy1 = (viewportHeightPx - viewportHeightPx * 0.5f - panOffsetY) / scale
+
+  val rawL = ((vx0 + pageWidthPx * 0.5f) / pageWidthPx).coerceIn(0f, 1f)
+  val rawT = ((vy0 + pageHeightPx * 0.5f) / pageHeightPx).coerceIn(0f, 1f)
+  val rawR = ((vx1 + pageWidthPx * 0.5f) / pageWidthPx).coerceIn(0f, 1f)
+  val rawB = ((vy1 + pageHeightPx * 0.5f) / pageHeightPx).coerceIn(0f, 1f)
+
+  val spanW = (rawR - rawL).coerceAtLeast(0f)
+  val spanH = (rawB - rawT).coerceAtLeast(0f)
+  if (spanW <= 0.005f || spanH <= 0.005f) return null
+
+  val padW = spanW * overscanFraction
+  val padH = spanH * overscanFraction
+
+  return PdfNormalizedRect(
+    left = (rawL - padW).coerceIn(0f, 1f),
+    top = (rawT - padH).coerceIn(0f, 1f),
+    right = (rawR + padW).coerceIn(0f, 1f),
+    bottom = (rawB + padH).coerceIn(0f, 1f)
+  )
+}
+
+data class PdfRegionRenderSpec(
+  val bitmapWidthPx: Int,
+  val bitmapHeightPx: Int,
+  val translatePtX: Float,
+  val translatePtY: Float,
+  val scaleX: Float,
+  val scaleY: Float
+)
+
+fun computePdfRegionRenderSpec(
+  pagePtWidth: Float,
+  pagePtHeight: Float,
+  region: PdfNormalizedRect,
+  fullPageTargetWidthPx: Float,
+  maxBitmapDimPx: Int = 2400
+): PdfRegionRenderSpec? {
+  val normW = region.width
+  val normH = region.height
+  if (normW <= 0.005f || normH <= 0.005f) return null
+
+  val pagePtW = pagePtWidth.coerceAtLeast(1f)
+  val pagePtH = pagePtHeight.coerceAtLeast(1f)
+  val desiredPxPerPt = (fullPageTargetWidthPx / pagePtW).coerceAtLeast(0.5f)
+
+  val regionPtL = region.left * pagePtW
+  val regionPtT = region.top * pagePtH
+  val regionPtW = normW * pagePtW
+  val regionPtH = normH * pagePtH
+
+  val rawBmpW = regionPtW * desiredPxPerPt
+  val rawBmpH = regionPtH * desiredPxPerPt
+  val maxDim = maxBitmapDimPx.coerceAtLeast(64).toFloat()
+  val capFactor = minOf(1f, maxDim / maxOf(rawBmpW, rawBmpH, 1f))
+
+  val bmpW = (rawBmpW * capFactor).toInt().coerceIn(64, maxBitmapDimPx)
+  val bmpH = (rawBmpH * capFactor).toInt().coerceIn(64, maxBitmapDimPx)
+
+  return PdfRegionRenderSpec(
+    bitmapWidthPx = bmpW,
+    bitmapHeightPx = bmpH,
+    translatePtX = -regionPtL,
+    translatePtY = -regionPtT,
+    scaleX = bmpW.toFloat() / regionPtW,
+    scaleY = bmpH.toFloat() / regionPtH
+  )
 }
 
 data class PdfGlyphWord(
@@ -76,7 +174,7 @@ class PdfBookSession(
   }
 
   suspend fun renderPage(pageIndex: Int, targetWidthPx: Int): Bitmap? = withContext(Dispatchers.IO) {
-    val safeWidth = targetWidthPx.coerceIn(480, 2200)
+    val safeWidth = targetWidthPx.coerceIn(480, 2400)
     val cacheKey = "${pageIndex}_$safeWidth"
     cache.get(cacheKey)?.let { return@withContext it }
 
@@ -90,12 +188,60 @@ class PdfBookSession(
 
       activeRenderer.openPage(pageIndex).use { page ->
         val aspectRatio = page.height.toFloat() / page.width.coerceAtLeast(1).toFloat()
-        val targetHeight = (safeWidth * aspectRatio).toInt().coerceIn(480, 3400)
+        val targetHeight = (safeWidth * aspectRatio).toInt().coerceIn(480, 3600)
         val bitmap = Bitmap.createBitmap(safeWidth, targetHeight, Bitmap.Config.ARGB_8888)
         Canvas(bitmap).drawColor(Color.WHITE)
         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         cache.put(cacheKey, bitmap)
         bitmap
+      }
+    }
+  }
+
+  /**
+   * Renders a normalized sub-region of a PDF page at full zoomed pixel resolution using an affine
+   * PdfRenderer transform matrix so zoomed text stays sharp at any zoom factor without creating
+   * giant full-page bitmaps.
+   */
+  suspend fun renderPageRegion(
+    pageIndex: Int,
+    region: PdfNormalizedRect,
+    fullPageTargetWidthPx: Float,
+    renderedScale: Float
+  ): PdfZoomTile? = withContext(Dispatchers.IO) {
+    if (region.width <= 0.005f || region.height <= 0.005f) return@withContext null
+
+    mutex.withLock {
+      val activeRenderer = renderer ?: run {
+        val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        pfd = descriptor
+        PdfRenderer(descriptor).also { renderer = it }
+      }
+      if (pageIndex < 0 || pageIndex >= activeRenderer.pageCount) return@withLock null
+
+      activeRenderer.openPage(pageIndex).use { page ->
+        val spec = computePdfRegionRenderSpec(
+          pagePtWidth = page.width.toFloat(),
+          pagePtHeight = page.height.toFloat(),
+          region = region,
+          fullPageTargetWidthPx = fullPageTargetWidthPx
+        ) ?: return@withLock null
+
+        val matrix = android.graphics.Matrix().apply {
+          postTranslate(spec.translatePtX, spec.translatePtY)
+          postScale(spec.scaleX, spec.scaleY)
+        }
+
+        val bitmap = Bitmap.createBitmap(spec.bitmapWidthPx, spec.bitmapHeightPx, Bitmap.Config.ARGB_8888)
+        Canvas(bitmap).drawColor(Color.WHITE)
+        page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+        PdfZoomTile(
+          pageIndex = pageIndex,
+          region = region,
+          renderedScale = renderedScale,
+          bitmap = bitmap
+        )
       }
     }
   }

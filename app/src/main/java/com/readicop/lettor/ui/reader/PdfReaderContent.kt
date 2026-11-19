@@ -9,7 +9,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +50,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -63,6 +63,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -80,6 +81,8 @@ import com.readicop.lettor.data.preferences.ReaderTheme
 import com.readicop.lettor.domain.engine.PdfBookSession
 import com.readicop.lettor.domain.engine.PdfGlyphWord
 import com.readicop.lettor.domain.engine.PdfPageTextData
+import com.readicop.lettor.domain.engine.PdfZoomTile
+import com.readicop.lettor.domain.engine.computePdfZoomTileRegion
 import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
 import com.readicop.lettor.ui.theme.ReaderSurfaceColors
 import kotlin.math.abs
@@ -420,6 +423,8 @@ private fun PdfPaginatedReader(
     onPageChanged(pagerState.currentPage, prog)
   }
 
+  val latestSelection by rememberUpdatedState(activeSelection)
+
   Box(
     modifier = modifier
       .fillMaxSize()
@@ -427,6 +432,15 @@ private fun PdfPaginatedReader(
       .onGloballyPositioned { coords ->
         overlayContainerSize = coords.size
         overlayContainerPosInRoot = coords.positionInRoot()
+      }
+      .pointerInput(Unit) {
+        detectSingleFingerTapAndLongPress(
+          onTap = {
+            if (latestSelection != null) {
+              activeSelection = null
+            }
+          }
+        )
       }
   ) {
     Column(
@@ -609,12 +623,22 @@ private fun PdfSinglePageView(
   onZoomStateChanged: (Boolean) -> Unit
 ) {
   var bitmap by remember(pageIndex, targetWidthPx) { mutableStateOf<Bitmap?>(null) }
+  var zoomTile by remember(pageIndex) { mutableStateOf<PdfZoomTile?>(null) }
   var pageText by remember(pageIndex) { mutableStateOf<PdfPageTextData?>(null) }
   var scale by remember(pageIndex) { mutableFloatStateOf(1f) }
   var offset by remember(pageIndex) { mutableStateOf(Offset.Zero) }
   var viewportSize by remember(pageIndex) { mutableStateOf(IntSize.Zero) }
   var viewportPosInRoot by remember(pageIndex) { mutableStateOf(Offset.Zero) }
   var basePageSizePx by remember(pageIndex) { mutableStateOf(Size.Zero) }
+
+  val latestPageText by rememberUpdatedState(pageText)
+  val latestScale by rememberUpdatedState(scale)
+  val latestOffset by rememberUpdatedState(offset)
+  val latestViewportSize by rememberUpdatedState(viewportSize)
+  val latestBasePageSizePx by rememberUpdatedState(basePageSizePx)
+  val latestSelection by rememberUpdatedState(activeSelection)
+  val latestOnTapPage by rememberUpdatedState(onTapPage)
+  val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
   DisposableEffect(pageIndex) {
     onDispose { onRemoveMetrics() }
@@ -632,6 +656,55 @@ private fun PdfSinglePageView(
 
   LaunchedEffect(scale) {
     onZoomStateChanged(scale > 1.05f)
+  }
+
+  // Re-render crisp visible region dynamically whenever zoomed > 1.05x
+  LaunchedEffect(pageIndex, scale, offset, basePageSizePx, viewportSize) {
+    if (scale <= 1.05f || basePageSizePx.width <= 0f || basePageSizePx.height <= 0f || viewportSize.width <= 0) {
+      zoomTile = null
+      return@LaunchedEffect
+    }
+    val visibleRegion = computePdfZoomTileRegion(
+      viewportWidthPx = viewportSize.width.toFloat(),
+      viewportHeightPx = viewportSize.height.toFloat(),
+      pageWidthPx = basePageSizePx.width,
+      pageHeightPx = basePageSizePx.height,
+      scale = scale,
+      panOffsetX = offset.x,
+      panOffsetY = offset.y,
+      overscanFraction = 0f
+    ) ?: return@LaunchedEffect
+
+    val existing = zoomTile
+    if (existing != null &&
+      existing.pageIndex == pageIndex &&
+      existing.region.contains(visibleRegion) &&
+      abs(existing.renderedScale - scale) / scale <= 0.14f
+    ) {
+      return@LaunchedEffect
+    }
+
+    val paddedRegion = computePdfZoomTileRegion(
+      viewportWidthPx = viewportSize.width.toFloat(),
+      viewportHeightPx = viewportSize.height.toFloat(),
+      pageWidthPx = basePageSizePx.width,
+      pageHeightPx = basePageSizePx.height,
+      scale = scale,
+      panOffsetX = offset.x,
+      panOffsetY = offset.y,
+      overscanFraction = 0.18f
+    ) ?: return@LaunchedEffect
+
+    delay(55L)
+    val rendered = session.renderPageRegion(
+      pageIndex = pageIndex,
+      region = paddedRegion,
+      fullPageTargetWidthPx = basePageSizePx.width * scale,
+      renderedScale = scale
+    )
+    if (rendered != null) {
+      zoomTile = rendered
+    }
   }
 
   SideEffect {
@@ -656,24 +729,29 @@ private fun PdfSinglePageView(
         viewportSize = coords.size
         viewportPosInRoot = coords.positionInRoot()
       }
-      .pointerInput(pageIndex, pageText, basePageSizePx, viewportSize) {
-        detectTapGestures(
-          onTap = { onTapPage() },
+      .pointerInput(pageIndex) {
+        detectSingleFingerTapAndLongPress(
+          shouldSkipDoubleTap = { latestSelection != null },
+          onTap = { latestOnTapPage() },
           onLongPress = { tapOffset ->
-            val data = pageText
-            if (data != null && !data.isScanned && basePageSizePx.width > 0f && basePageSizePx.height > 0f) {
-              val localCenterX = (tapOffset.x - viewportSize.width * 0.5f - offset.x) / scale
-              val localCenterY = (tapOffset.y - viewportSize.height * 0.5f - offset.y) / scale
-              val nx = ((localCenterX + basePageSizePx.width * 0.5f) / basePageSizePx.width).coerceIn(0f, 1f)
-              val ny = ((localCenterY + basePageSizePx.height * 0.5f) / basePageSizePx.height).coerceIn(0f, 1f)
+            val data = latestPageText
+            val curBase = latestBasePageSizePx
+            val curView = latestViewportSize
+            val curScale = latestScale
+            val curOffset = latestOffset
+            if (data != null && !data.isScanned && curBase.width > 0f && curBase.height > 0f) {
+              val localCenterX = (tapOffset.x - curView.width * 0.5f - curOffset.x) / curScale
+              val localCenterY = (tapOffset.y - curView.height * 0.5f - curOffset.y) / curScale
+              val nx = ((localCenterX + curBase.width * 0.5f) / curBase.width).coerceIn(0f, 1f)
+              val ny = ((localCenterY + curBase.height * 0.5f) / curBase.height).coerceIn(0f, 1f)
               val wordIdx = findNearestPdfWordIndex(data.words, nx, ny)
               if (wordIdx != null) {
-                onSelectWord(wordIdx)
+                latestOnSelectWord(wordIdx)
               }
             }
           },
           onDoubleTap = {
-            if (scale > 1.1f) {
+            if (latestScale > 1.1f) {
               scale = 1f
               offset = Offset.Zero
             } else {
@@ -715,7 +793,7 @@ private fun PdfSinglePageView(
             }
 
             if (pastTouchSlop && (pointerCount >= 2 || scale > 1.05f)) {
-              val newScale = (scale * zoomChange).coerceIn(1f, 4f)
+              val newScale = (scale * zoomChange).coerceIn(1f, 5f)
               scale = newScale
               if (newScale <= 1.02f) {
                 scale = 1f
@@ -774,6 +852,31 @@ private fun PdfSinglePageView(
             colorFilter = colorFilter,
             modifier = Modifier.fillMaxSize()
           )
+
+          val activeTile = zoomTile
+          if (activeTile != null && scale > 1.05f) {
+            val tileImage = remember(activeTile) { activeTile.bitmap.asImageBitmap() }
+            Canvas(modifier = Modifier.fillMaxSize()) {
+              val dstLeft = activeTile.region.left * size.width
+              val dstTop = activeTile.region.top * size.height
+              val dstW = (activeTile.region.width * size.width).coerceAtLeast(1f)
+              val dstH = (activeTile.region.height * size.height).coerceAtLeast(1f)
+              withTransform({
+                translate(left = dstLeft, top = dstTop)
+                scale(
+                  scaleX = dstW / tileImage.width.coerceAtLeast(1).toFloat(),
+                  scaleY = dstH / tileImage.height.coerceAtLeast(1).toFloat(),
+                  pivot = Offset.Zero
+                )
+              }) {
+                drawImage(
+                  image = tileImage,
+                  topLeft = Offset.Zero,
+                  colorFilter = colorFilter
+                )
+              }
+            }
+          }
 
           val sel = activeSelection
           val data = pageText
@@ -939,16 +1042,19 @@ private fun PdfScrollReader(
       BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
         val targetWidthPx = with(density) { maxWidth.roundToPx() }.coerceAtLeast(720)
 
+        val latestActiveSelection by rememberUpdatedState(activeSelection)
+        val latestOnToggleControls by rememberUpdatedState(onToggleControls)
+
         LazyColumn(
           state = listState,
           contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
           verticalArrangement = Arrangement.spacedBy(12.dp),
           modifier = Modifier
             .fillMaxSize()
-            .pointerInput(activeSelection != null) {
-              detectTapGestures(
+            .pointerInput(Unit) {
+              detectSingleFingerTapAndLongPress(
                 onTap = {
-                  if (activeSelection != null) activeSelection = null else onToggleControls()
+                  if (latestActiveSelection != null) activeSelection = null else latestOnToggleControls()
                 }
               )
             }
@@ -1096,11 +1202,20 @@ private fun PdfScrollPageCard(
   onSelectWord: (wordIndex: Int) -> Unit
 ) {
   var bitmap by remember(pageIndex, targetWidthPx) { mutableStateOf<Bitmap?>(null) }
+  var zoomTile by remember(pageIndex) { mutableStateOf<PdfZoomTile?>(null) }
   var pageText by remember(pageIndex) { mutableStateOf<PdfPageTextData?>(null) }
   var scale by remember(pageIndex) { mutableFloatStateOf(1f) }
   var panOffset by remember(pageIndex) { mutableStateOf(Offset.Zero) }
   var cardPosInRoot by remember(pageIndex) { mutableStateOf(Offset.Zero) }
   var cardSize by remember(pageIndex) { mutableStateOf(IntSize.Zero) }
+
+  val latestPageText by rememberUpdatedState(pageText)
+  val latestScale by rememberUpdatedState(scale)
+  val latestPanOffset by rememberUpdatedState(panOffset)
+  val latestCardSize by rememberUpdatedState(cardSize)
+  val latestSelection by rememberUpdatedState(activeSelection)
+  val latestOnTapPage by rememberUpdatedState(onTapPage)
+  val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
   DisposableEffect(pageIndex) {
     onDispose { onRemoveMetrics() }
@@ -1114,6 +1229,56 @@ private fun PdfScrollPageCard(
     val data = session.extractPageText(pageIndex)
     pageText = data
     onPageTextLoaded(data)
+  }
+
+  LaunchedEffect(pageIndex, scale, panOffset, cardSize) {
+    if (scale <= 1.05f || cardSize.width <= 0 || cardSize.height <= 0) {
+      zoomTile = null
+      return@LaunchedEffect
+    }
+    val w = cardSize.width.toFloat()
+    val h = cardSize.height.toFloat()
+    val visibleRegion = computePdfZoomTileRegion(
+      viewportWidthPx = w,
+      viewportHeightPx = h,
+      pageWidthPx = w,
+      pageHeightPx = h,
+      scale = scale,
+      panOffsetX = panOffset.x,
+      panOffsetY = panOffset.y,
+      overscanFraction = 0f
+    ) ?: return@LaunchedEffect
+
+    val existing = zoomTile
+    if (existing != null &&
+      existing.pageIndex == pageIndex &&
+      existing.region.contains(visibleRegion) &&
+      abs(existing.renderedScale - scale) / scale <= 0.14f
+    ) {
+      return@LaunchedEffect
+    }
+
+    val paddedRegion = computePdfZoomTileRegion(
+      viewportWidthPx = w,
+      viewportHeightPx = h,
+      pageWidthPx = w,
+      pageHeightPx = h,
+      scale = scale,
+      panOffsetX = panOffset.x,
+      panOffsetY = panOffset.y,
+      overscanFraction = 0.18f
+    ) ?: return@LaunchedEffect
+
+    delay(55L)
+    val rendered = session.renderPageRegion(
+      pageIndex = pageIndex,
+      region = paddedRegion,
+      fullPageTargetWidthPx = w * scale,
+      renderedScale = scale
+    )
+    if (rendered != null) {
+      zoomTile = rendered
+    }
   }
 
   SideEffect {
@@ -1150,29 +1315,33 @@ private fun PdfScrollPageCard(
         cardPosInRoot = coords.positionInRoot()
         cardSize = coords.size
       }
-      .pointerInput(pageIndex, pageText, cardSize) {
-        detectTapGestures(
-          onTap = { onTapPage() },
+      .pointerInput(pageIndex) {
+        detectSingleFingerTapAndLongPress(
+          shouldSkipDoubleTap = { latestSelection != null },
+          onTap = { latestOnTapPage() },
           onDoubleTap = {
-            if (scale > 1.1f) {
+            if (latestScale > 1.1f) {
               scale = 1f
               panOffset = Offset.Zero
             } else {
-              scale = 2.0f
+              scale = 2.2f
             }
           },
           onLongPress = { tapOffset ->
-            val data = pageText
-            if (data != null && !data.isScanned && cardSize.width > 0 && cardSize.height > 0) {
-              val w = cardSize.width.toFloat()
-              val h = cardSize.height.toFloat()
-              val localCenterX = (tapOffset.x - w * 0.5f - panOffset.x) / scale
-              val localCenterY = (tapOffset.y - h * 0.5f - panOffset.y) / scale
+            val data = latestPageText
+            val curCard = latestCardSize
+            val curScale = latestScale
+            val curPan = latestPanOffset
+            if (data != null && !data.isScanned && curCard.width > 0 && curCard.height > 0) {
+              val w = curCard.width.toFloat()
+              val h = curCard.height.toFloat()
+              val localCenterX = (tapOffset.x - w * 0.5f - curPan.x) / curScale
+              val localCenterY = (tapOffset.y - h * 0.5f - curPan.y) / curScale
               val nx = ((localCenterX + w * 0.5f) / w).coerceIn(0f, 1f)
               val ny = ((localCenterY + h * 0.5f) / h).coerceIn(0f, 1f)
               val wordIdx = findNearestPdfWordIndex(data.words, nx, ny)
               if (wordIdx != null) {
-                onSelectWord(wordIdx)
+                latestOnSelectWord(wordIdx)
               }
             }
           }
@@ -1206,7 +1375,7 @@ private fun PdfScrollPageCard(
             }
 
             if (pastTouchSlop && (pointerCount >= 2 || scale > 1.05f)) {
-              val newScale = (scale * zoomChange).coerceIn(1f, 3.5f)
+              val newScale = (scale * zoomChange).coerceIn(1f, 5f)
               scale = newScale
               if (newScale <= 1.02f) {
                 scale = 1f
@@ -1250,6 +1419,31 @@ private fun PdfScrollPageCard(
           colorFilter = colorFilter,
           modifier = Modifier.fillMaxSize()
         )
+
+        val activeTile = zoomTile
+        if (activeTile != null && scale > 1.05f) {
+          val tileImage = remember(activeTile) { activeTile.bitmap.asImageBitmap() }
+          Canvas(modifier = Modifier.fillMaxSize()) {
+            val dstLeft = activeTile.region.left * size.width
+            val dstTop = activeTile.region.top * size.height
+            val dstW = (activeTile.region.width * size.width).coerceAtLeast(1f)
+            val dstH = (activeTile.region.height * size.height).coerceAtLeast(1f)
+            withTransform({
+              translate(left = dstLeft, top = dstTop)
+              scale(
+                scaleX = dstW / tileImage.width.coerceAtLeast(1).toFloat(),
+                scaleY = dstH / tileImage.height.coerceAtLeast(1).toFloat(),
+                pivot = Offset.Zero
+              )
+            }) {
+              drawImage(
+                image = tileImage,
+                topLeft = Offset.Zero,
+                colorFilter = colorFilter
+              )
+            }
+          }
+        }
 
         val sel = activeSelection
         val data = pageText

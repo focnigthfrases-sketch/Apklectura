@@ -5,9 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -54,6 +52,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -608,6 +607,9 @@ private fun EpubPaginatedReader(
   val topSafePx = with(density) { (statusTopDp + topOverlayClearanceDp).toPx() }
   val bottomSafePx = with(density) { navBottomDp.toPx() }
 
+  val latestSelection by rememberUpdatedState(activeSelection)
+  val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
+
   // Outer BoxWithConstraints has the exact root origin of ReaderSelectionOverlay (no statusBar shift!)
   BoxWithConstraints(
     modifier = modifier
@@ -616,6 +618,15 @@ private fun EpubPaginatedReader(
       .onGloballyPositioned { coords ->
         overlayContainerSize = coords.size
         overlayContainerPosInRoot = coords.positionInRoot()
+      }
+      .pointerInput(Unit) {
+        detectSingleFingerTapAndLongPress(
+          onTap = {
+            if (latestSelection != null) {
+              latestOnSelectionChanged(null)
+            }
+          }
+        )
       }
   ) {
     val contentMaxWidthDp = minOf(maxWidth, 680.dp)
@@ -762,8 +773,8 @@ private fun EpubPaginatedReader(
           var pageWidthPx by remember { mutableFloatStateOf(availableWidthPx.toFloat()) }
 
           val handlePageTap: (Float) -> Unit = { xInPage ->
-            if (activeSelection != null) {
-              onSelectionChanged(null)
+            if (latestSelection != null) {
+              latestOnSelectionChanged(null)
             } else {
               val w = pageWidthPx.coerceAtLeast(1f)
               when {
@@ -789,6 +800,7 @@ private fun EpubPaginatedReader(
               }
             }
           }
+          val latestHandlePageTap by rememberUpdatedState(handlePageTap)
 
           Box(
             modifier = Modifier
@@ -796,8 +808,10 @@ private fun EpubPaginatedReader(
               .onGloballyPositioned { coords ->
                 pageWidthPx = coords.size.width.toFloat()
               }
-              .pointerInput(pageIdx, chapter.index, safePageCount, activeSelection != null) {
-                detectTapGestures { offset -> handlePageTap(offset.x) }
+              .pointerInput(pageIdx, chapter.index, safePageCount) {
+                detectSingleFingerTapAndLongPress(
+                  onTap = { offset -> latestHandlePageTap(offset.x) }
+                )
               }
               .padding(horizontal = horizontalPad, vertical = 6.dp)
           ) {
@@ -976,10 +990,13 @@ private fun EpubPaginatedReader(
                   modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
-                      onSelectionChanged(null)
-                      val nextIdx = chapter.index + 1
-                      val prog = (nextIdx + 1).toFloat() / totalChapters
-                      onPositionChanged(nextIdx, 0, prog)
+                      if (latestSelection != null) {
+                        latestOnSelectionChanged(null)
+                      } else {
+                        val nextIdx = chapter.index + 1
+                        val prog = (nextIdx + 1).toFloat() / totalChapters
+                        onPositionChanged(nextIdx, 0, prog)
+                      }
                     }
                     .padding(vertical = 8.dp),
                   horizontalArrangement = Arrangement.SpaceBetween,
@@ -1139,6 +1156,8 @@ private fun SelectableTextBlockWrapper(
   var blockOffsetX by remember { mutableFloatStateOf(0f) }
   var latestLayout by remember(sliceKey) { mutableStateOf<TextLayoutResult?>(null) }
   var latestPosInRoot by remember(sliceKey) { mutableStateOf(Offset.Zero) }
+  val latestOnTapXInPage by rememberUpdatedState(onTapXInPage)
+  val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
   DisposableEffect(sliceKey) {
     onDispose { sliceLayouts.remove(sliceKey) }
@@ -1237,15 +1256,15 @@ private fun SelectableTextBlockWrapper(
         }
       }
       .pointerInput(sliceKey, rawText) {
-        detectTapGestures(
+        detectSingleFingerTapAndLongPress(
           onLongPress = { localOffset ->
             val layout = latestLayout
             val localChar = if (layout != null && rawText.isNotEmpty()) {
               layout.getOffsetForPosition(localOffset).coerceIn(0, rawText.lastIndex)
             } else 0
-            onSelectWord(localChar)
+            latestOnSelectWord(localChar)
           },
-          onTap = { local -> onTapXInPage(blockOffsetX + local.x) }
+          onTap = { local -> latestOnTapXInPage(blockOffsetX + local.x) }
         )
       }
 
@@ -1368,6 +1387,10 @@ private fun EpubScrollReader(
     color = surfaceColors.text
   )
 
+  val latestSelection by rememberUpdatedState(activeSelection)
+  val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
+  val latestOnToggleControls by rememberUpdatedState(onToggleControls)
+
   Box(
     modifier = modifier
       .fillMaxSize()
@@ -1382,11 +1405,13 @@ private fun EpubScrollReader(
         .fillMaxSize()
         .windowInsetsPadding(WindowInsets.statusBars)
         .windowInsetsPadding(WindowInsets.navigationBars)
-        .clickable(
-          interactionSource = remember { MutableInteractionSource() },
-          indication = null
-        ) {
-          if (activeSelection != null) onSelectionChanged(null) else onToggleControls()
+        .pointerInput(Unit) {
+          detectSingleFingerTapAndLongPress(
+            onTap = {
+              if (latestSelection != null) latestOnSelectionChanged(null)
+              else latestOnToggleControls()
+            }
+          )
         },
       contentAlignment = Alignment.TopCenter
     ) {
@@ -1400,6 +1425,14 @@ private fun EpubScrollReader(
         modifier = Modifier
           .widthIn(max = 680.dp)
           .fillMaxHeight()
+          .pointerInput(Unit) {
+            detectSingleFingerTapAndLongPress(
+              onTap = {
+                if (latestSelection != null) latestOnSelectionChanged(null)
+                else latestOnToggleControls()
+              }
+            )
+          }
           .testTag("epub_scroll_list")
       ) {
         itemsIndexed(chapter.blocks) { blockIndex, block ->
@@ -1434,7 +1467,7 @@ private fun EpubScrollReader(
                 accentColor = surfaceColors.accent,
                 sliceLayouts = sliceLayouts,
                 onTapXInPage = {
-                  if (activeSelection != null) onSelectionChanged(null) else onToggleControls()
+                  if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
                 },
                 onSelectWord = { localChar ->
                   val range = expandWordRangeAtOffset(block.text, localChar)
@@ -1476,7 +1509,7 @@ private fun EpubScrollReader(
                 accentColor = surfaceColors.accent,
                 sliceLayouts = sliceLayouts,
                 onTapXInPage = {
-                  if (activeSelection != null) onSelectionChanged(null) else onToggleControls()
+                  if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
                 },
                 onSelectWord = { localChar ->
                   val range = expandWordRangeAtOffset(block.content.text, localChar)
@@ -1528,7 +1561,7 @@ private fun EpubScrollReader(
                       accentColor = surfaceColors.accent,
                       sliceLayouts = sliceLayouts,
                       onTapXInPage = {
-                        if (activeSelection != null) onSelectionChanged(null) else onToggleControls()
+                        if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
                       },
                       onSelectWord = { localChar ->
                         val range = expandWordRangeAtOffset(block.content.text, localChar)

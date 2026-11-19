@@ -394,4 +394,75 @@ class ExampleRobolectricTest {
       db.close()
     }
   }
+
+  @Test
+  fun `pdf zoom tile region calculation and render spec keep crisp resolution at high zoom`() {
+    // Unzoomed scale returns null (uses base bitmap)
+    assertEquals(
+      null,
+      com.readicop.lettor.domain.engine.computePdfZoomTileRegion(
+        viewportWidthPx = 1080f,
+        viewportHeightPx = 1600f,
+        pageWidthPx = 1080f,
+        pageHeightPx = 1520f,
+        scale = 1.0f,
+        panOffsetX = 0f,
+        panOffsetY = 0f
+      )
+    )
+
+    // Centered 4x zoom crops strictly around center + overscan
+    val region4x = com.readicop.lettor.domain.engine.computePdfZoomTileRegion(
+      viewportWidthPx = 1080f,
+      viewportHeightPx = 1520f,
+      pageWidthPx = 1080f,
+      pageHeightPx = 1520f,
+      scale = 4.0f,
+      panOffsetX = 0f,
+      panOffsetY = 0f,
+      overscanFraction = 0.10f
+    )!!
+    assertTrue(region4x.left in 0.30f..0.40f)
+    assertTrue(region4x.right in 0.60f..0.70f)
+    assertTrue(region4x.top in 0.30f..0.40f)
+    assertTrue(region4x.bottom in 0.60f..0.70f)
+
+    val visibleOnly = com.readicop.lettor.domain.engine.computePdfZoomTileRegion(
+      viewportWidthPx = 1080f,
+      viewportHeightPx = 1520f,
+      pageWidthPx = 1080f,
+      pageHeightPx = 1520f,
+      scale = 4.0f,
+      panOffsetX = 0f,
+      panOffsetY = 0f,
+      overscanFraction = 0f
+    )!!
+    assertTrue(region4x.contains(visibleOnly))
+
+    // Render spec produces high pixel density matching zoomed viewport while capping huge dimensions
+    val spec4x = com.readicop.lettor.domain.engine.computePdfRegionRenderSpec(
+      pagePtWidth = 612f,
+      pagePtHeight = 792f,
+      region = region4x,
+      fullPageTargetWidthPx = 1080f * 4.0f
+    )!!
+    // Region width is ~0.30 -> ~1296px wide (far sharper than scaling a 1080px base page)
+    assertTrue(spec4x.bitmapWidthPx >= 1000)
+    assertTrue(spec4x.bitmapHeightPx >= 1000)
+    assertTrue(spec4x.bitmapWidthPx <= 2400)
+    assertTrue(spec4x.bitmapHeightPx <= 2400)
+    assertTrue(spec4x.translatePtX < 0f)
+    assertTrue(spec4x.translatePtY < 0f)
+    assertTrue(spec4x.scaleX > 5f)
+    assertTrue(spec4x.scaleY > 5f)
+
+    // Extreme 8x zoom safely caps max bitmap dim at 2400px without OOM
+    val spec8x = com.readicop.lettor.domain.engine.computePdfRegionRenderSpec(
+      pagePtWidth = 612f,
+      pagePtHeight = 792f,
+      region = region4x,
+      fullPageTargetWidthPx = 1080f * 8.0f
+    )!!
+    assertEquals(2400, maxOf(spec8x.bitmapWidthPx, spec8x.bitmapHeightPx))
+  }
 }
