@@ -389,12 +389,14 @@ fun ReaderScreen(
           }
         }
 
+        val activeChapterId = epubChapterUniqueId(content.activeChapter, content.chapterStubs)
         EpubReaderContent(
           metadata = content.metadata,
           chapterStubs = content.chapterStubs,
           activeChapter = content.activeChapter,
           initialSubPage = uiState.currentSubOffset,
-          initialVerticalPosition = uiState.verticalChapterPositions[epubChapterUniqueId(content.activeChapter)],
+          initialHorizontalPosition = uiState.horizontalChapterPositions[activeChapterId],
+          initialVerticalPosition = uiState.verticalChapterPositions[activeChapterId],
           preferences = uiState.preferences,
           surfaceColors = surfaceColors,
           imageCache = imageCache,
@@ -421,6 +423,7 @@ fun ReaderScreen(
           onPositionChanged = { chIdx, subPage, overall ->
             viewModel.onPositionChanged(chIdx, subPage, overall)
           },
+          onHorizontalPositionChanged = viewModel::onHorizontalPositionChanged,
           onVerticalPositionChanged = viewModel::onVerticalPositionChanged,
           onSelectChapter = viewModel::jumpToUnit,
           onVisibleBlockChanged = { blockIdx ->

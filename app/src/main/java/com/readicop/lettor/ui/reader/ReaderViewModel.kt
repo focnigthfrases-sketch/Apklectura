@@ -75,6 +75,7 @@ data class ReaderUiState(
   val contentState: ReaderContentState = ReaderContentState.Loading,
   val currentUnit: Int = 0,
   val currentSubOffset: Int = 0,
+  val horizontalChapterPositions: Map<String, EpubHorizontalPosition> = emptyMap(),
   val verticalChapterPositions: Map<String, EpubVerticalScrollPosition> = emptyMap(),
   val bookmarks: List<BookmarkEntity> = emptyList(),
   val highlights: List<HighlightEntity> = emptyList(),
@@ -128,8 +129,11 @@ class ReaderViewModel(
   private var sleepTimerJob: Job? = null
   private var chapterSwitchJob: Job? = null
   private val chapterSubOffsets = mutableMapOf<Int, Int>()
+  private val horizontalChapterPositions = mutableMapOf<String, EpubHorizontalPosition>()
+  private val horizontalPositionsByChapterFlow = MutableStateFlow<Map<String, EpubHorizontalPosition>>(emptyMap())
   private val verticalChapterPositions = mutableMapOf<String, EpubVerticalScrollPosition>()
   private val verticalPositionsByChapterFlow = MutableStateFlow<Map<String, EpubVerticalScrollPosition>>(emptyMap())
+  private val chapterAnchors = mutableMapOf<String, EpubChapterAnchor>()
 
   private val ttsController: TtsReaderController = TtsReaderController(appContext) {
     // Advance to next chapter automatically when TTS finishes a chapter
@@ -178,10 +182,24 @@ class ReaderViewModel(
     )
   }
 
+  private data class PositionStateTuple(
+    val unit: Int,
+    val subOffset: Int,
+    val horizontalPositions: Map<String, EpubHorizontalPosition>,
+    val verticalPositions: Map<String, EpubVerticalScrollPosition>
+  )
+
+  private val positionStateFlow = combine(
+    currentUnitFlow,
+    currentSubOffsetFlow,
+    horizontalPositionsByChapterFlow,
+    verticalPositionsByChapterFlow
+  ) { u, s, h, v -> PositionStateTuple(u, s, h, v) }
+
   val uiState: StateFlow<ReaderUiState> = combine(
     repository.observeBook(bookId),
     contentStateFlow,
-    combine(currentUnitFlow, currentSubOffsetFlow, verticalPositionsByChapterFlow) { u, s, v -> Triple(u, s, v) },
+    positionStateFlow,
     combine(repository.observeBookmarksForBook(bookId), repository.observeHighlightsForBook(bookId)) { bm, hl -> bm to hl },
     combine(effectivePreferencesFlow, extraStateFlow) { prefs, extra -> prefs to extra }
   ) { book, content, position, annotations, prefExtra ->
@@ -189,9 +207,10 @@ class ReaderViewModel(
     ReaderUiState(
       book = book,
       contentState = content,
-      currentUnit = position.first,
-      currentSubOffset = position.second,
-      verticalChapterPositions = position.third,
+      currentUnit = position.unit,
+      currentSubOffset = position.subOffset,
+      horizontalChapterPositions = position.horizontalPositions,
+      verticalChapterPositions = position.verticalPositions,
       bookmarks = annotations.first,
       highlights = annotations.second,
       preferences = prefs,
@@ -268,18 +287,34 @@ class ReaderViewModel(
             val safeUnit = startUnit.coerceIn(0, (session.chapterStubs.size - 1).coerceAtLeast(0))
             val safeSub = startSub.coerceAtLeast(0)
             chapterSubOffsets.clear()
-            chapterSubOffsets[safeUnit] = safeSub
+            horizontalChapterPositions.clear()
             verticalChapterPositions.clear()
+            chapterAnchors.clear()
             val activeChapter = withContext(Dispatchers.IO) { session.getChapter(safeUnit) }
+            val chId = epubChapterUniqueId(activeChapter, session.chapterStubs)
             val prefs = preferencesRepository.preferencesFlow.first()
             if (prefs.epubScrollMode && safeSub > 0) {
-              val chId = epubChapterUniqueId(activeChapter)
+              val clampedBlock = safeSub.coerceIn(0, (activeChapter.blocks.size - 1).coerceAtLeast(0))
               verticalChapterPositions[chId] = EpubVerticalScrollPosition(
                 chapterId = chId,
                 chapterIndex = safeUnit,
-                blockIndex = safeSub.coerceIn(0, (activeChapter.blocks.size - 1).coerceAtLeast(0))
+                blockIndex = clampedBlock
+              )
+              chapterAnchors[chId] = EpubChapterAnchor(
+                chapterId = chId,
+                chapterIndex = safeUnit,
+                blockIndex = clampedBlock
+              )
+            } else if (!prefs.epubScrollMode && safeSub > 0) {
+              chapterSubOffsets[safeUnit] = safeSub
+              horizontalChapterPositions[chId] = EpubHorizontalPosition(
+                chapterId = chId,
+                chapterIndex = safeUnit,
+                subPage = safeSub,
+                hasSemanticAnchor = false
               )
             }
+            horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
             verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
             currentUnitFlow.value = safeUnit
             currentSubOffsetFlow.value = safeSub
@@ -315,11 +350,65 @@ class ReaderViewModel(
     }
   }
 
-  internal fun rememberedSubOffsetForChapter(chapterIndex: Int): Int =
-    chapterSubOffsets[chapterIndex]?.coerceAtLeast(0) ?: 0
+  internal fun rememberedSubOffsetForChapter(chapterIndex: Int): Int {
+    val content = contentStateFlow.value as? ReaderContentState.EpubReady
+    if (content != null && chapterIndex in content.chapterStubs.indices) {
+      val stub = content.chapterStubs[chapterIndex]
+      val chId = epubChapterUniqueId(stub.index, stub.zipPath, content.chapterStubs)
+      horizontalChapterPositions[chId]?.let { return it.subPage.coerceAtLeast(0) }
+    }
+    return chapterSubOffsets[chapterIndex]?.coerceAtLeast(0) ?: 0
+  }
+
+  internal fun savedHorizontalPositionForChapter(chapterId: String): EpubHorizontalPosition? =
+    horizontalChapterPositions[chapterId]
 
   internal fun savedVerticalPositionForChapter(chapterId: String): EpubVerticalScrollPosition? =
     verticalChapterPositions[chapterId]
+
+  fun onHorizontalPositionChanged(
+    chapter: EpubChapter,
+    position: EpubHorizontalPosition,
+    overallProgressFraction: Float
+  ) {
+    val content = contentStateFlow.value as? ReaderContentState.EpubReady ?: return
+    val chId = epubChapterUniqueId(chapter, content.chapterStubs)
+    val safeSub = position.subPage.coerceAtLeast(0)
+    val normalized = position.copy(
+      chapterId = chId,
+      chapterIndex = chapter.index,
+      subPage = safeSub
+    )
+    chapterSubOffsets[chapter.index] = safeSub
+    horizontalChapterPositions[chId] = normalized
+    horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
+    if (normalized.hasSemanticAnchor) {
+      chapterAnchors[chId] = EpubChapterAnchor(
+        chapterId = chId,
+        chapterIndex = chapter.index,
+        blockIndex = normalized.anchorBlockIndex.coerceAtLeast(0),
+        charOffsetInBlock = normalized.anchorCharOffsetInBlock.coerceAtLeast(0),
+        chapterProgressFraction = normalized.chapterProgressFraction.coerceIn(0f, 1f)
+      )
+    }
+
+    if (content.activeChapter.index != chapter.index) {
+      return
+    }
+    val totalUnits = content.chapterStubs.size.coerceAtLeast(1)
+    currentUnitFlow.value = chapter.index
+    currentSubOffsetFlow.value = safeSub
+    val book = uiState.value.book ?: return
+    viewModelScope.launch {
+      repository.updateProgress(
+        bookId = book.id,
+        unit = chapter.index,
+        subOffset = safeSub,
+        progress = overallProgressFraction.coerceIn(0f, 1f),
+        isFinished = chapter.index >= totalUnits - 1 && overallProgressFraction >= 0.96f
+      )
+    }
+  }
 
   fun onVerticalPositionChanged(
     chapter: EpubChapter,
@@ -327,19 +416,29 @@ class ReaderViewModel(
     overallProgressFraction: Float
   ) {
     val content = contentStateFlow.value as? ReaderContentState.EpubReady ?: return
-    val chId = epubChapterUniqueId(chapter)
+    val chId = epubChapterUniqueId(chapter, content.chapterStubs)
     val normalized = position.copy(
       chapterId = chId,
       chapterIndex = chapter.index
     )
     verticalChapterPositions[chId] = normalized
     verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
+    val totalBlocks = chapter.blocks.size.coerceAtLeast(1)
+    chapterAnchors[chId] = EpubChapterAnchor(
+      chapterId = chId,
+      chapterIndex = chapter.index,
+      blockIndex = normalized.blockIndex.coerceAtLeast(0),
+      charOffsetInBlock = normalized.characterOffsetInBlock.coerceAtLeast(0),
+      blockScrollFraction = normalized.blockScrollFraction.coerceIn(0f, 1f),
+      chapterProgressFraction = ((normalized.blockIndex + 1).toFloat() / totalBlocks.toFloat()).coerceIn(0f, 1f)
+    )
 
     if (content.activeChapter.index != chapter.index) {
       return
     }
     val totalUnits = content.chapterStubs.size.coerceAtLeast(1)
     currentUnitFlow.value = chapter.index
+    currentSubOffsetFlow.value = normalized.blockIndex.coerceAtLeast(0)
     val book = uiState.value.book ?: return
     viewModelScope.launch {
       repository.updateProgress(
@@ -364,36 +463,69 @@ class ReaderViewModel(
           val chapter = withContext(Dispatchers.IO) {
             epubSession?.getChapter(safeIdx)
           } ?: return@launch
-          val chId = epubChapterUniqueId(chapter)
+          val latestContent = contentStateFlow.value as? ReaderContentState.EpubReady ?: content
+          val chId = epubChapterUniqueId(chapter, latestContent.chapterStubs)
           val isScrollMode = uiState.value.preferences.epubScrollMode
+
+          if (resetSubOffset) {
+            chapterSubOffsets.remove(safeIdx)
+            horizontalChapterPositions.remove(chId)
+            verticalChapterPositions.remove(chId)
+            chapterAnchors.remove(chId)
+          } else {
+            // Bridge semantic text anchor if the user visited this chapter in the other reading mode
+            if (!isScrollMode && !horizontalChapterPositions.containsKey(chId)) {
+              chapterAnchors[chId]?.let { anchor ->
+                horizontalChapterPositions[chId] = EpubHorizontalPosition(
+                  chapterId = chId,
+                  chapterIndex = safeIdx,
+                  subPage = 0,
+                  anchorBlockIndex = anchor.blockIndex,
+                  anchorCharOffsetInBlock = anchor.charOffsetInBlock,
+                  chapterProgressFraction = anchor.chapterProgressFraction,
+                  hasSemanticAnchor = true,
+                  layoutKey = null
+                )
+              }
+            } else if (isScrollMode && !verticalChapterPositions.containsKey(chId)) {
+              chapterAnchors[chId]?.let { anchor ->
+                verticalChapterPositions[chId] = EpubVerticalScrollPosition(
+                  chapterId = chId,
+                  chapterIndex = safeIdx,
+                  blockIndex = anchor.blockIndex,
+                  scrollOffsetPx = 0,
+                  blockScrollFraction = anchor.blockScrollFraction,
+                  characterOffsetInBlock = anchor.charOffsetInBlock,
+                  layoutSignature = null
+                )
+              }
+            }
+          }
+
           val restoredSub = if (resetSubOffset) {
             0
+          } else if (!isScrollMode) {
+            (horizontalChapterPositions[chId]?.subPage ?: chapterSubOffsets[safeIdx] ?: 0).coerceAtLeast(0)
           } else {
-            (chapterSubOffsets[safeIdx] ?: 0).coerceAtLeast(0)
+            verticalChapterPositions[chId]?.blockIndex?.coerceAtLeast(0) ?: 0
           }
-          if (!isScrollMode) {
+
+          if (!isScrollMode && !resetSubOffset) {
             chapterSubOffsets[safeIdx] = restoredSub
-            currentSubOffsetFlow.value = restoredSub
-          } else if (resetSubOffset) {
-            verticalChapterPositions.remove(chId)
-            verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
           }
+          horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
+          verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
+          currentSubOffsetFlow.value = restoredSub
           currentUnitFlow.value = safeIdx
-          val latestContent = contentStateFlow.value as? ReaderContentState.EpubReady ?: content
           contentStateFlow.value = latestContent.copy(activeChapter = chapter)
           loadChapterIntoTts(chapter)
           val totalUnits = latestContent.chapterStubs.size.coerceAtLeast(1)
           val prog = ((safeIdx + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
-          val savedSubForRoom = if (isScrollMode) {
-            verticalChapterPositions[chId]?.blockIndex?.coerceAtLeast(0) ?: 0
-          } else {
-            restoredSub
-          }
           val book = uiState.value.book ?: return@launch
           repository.updateProgress(
             bookId = book.id,
             unit = safeIdx,
-            subOffset = savedSubForRoom,
+            subOffset = restoredSub,
             progress = prog,
             isFinished = safeIdx >= totalUnits - 1 && prog >= 0.96f
           )
@@ -424,6 +556,19 @@ class ReaderViewModel(
 
     val safeSub = subOffset.coerceAtLeast(0)
     chapterSubOffsets[safeUnit] = safeSub
+    if (content is ReaderContentState.EpubReady) {
+      val chId = epubChapterUniqueId(content.activeChapter, content.chapterStubs)
+      val existing = horizontalChapterPositions[chId]
+      if (existing == null || existing.subPage != safeSub) {
+        horizontalChapterPositions[chId] = EpubHorizontalPosition(
+          chapterId = chId,
+          chapterIndex = safeUnit,
+          subPage = safeSub,
+          hasSemanticAnchor = false
+        )
+        horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
+      }
+    }
     currentUnitFlow.value = safeUnit
     currentSubOffsetFlow.value = safeSub
 

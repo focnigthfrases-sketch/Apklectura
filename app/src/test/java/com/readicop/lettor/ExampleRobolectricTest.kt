@@ -1375,4 +1375,322 @@ class ExampleRobolectricTest {
       tempEpub.delete()
     }
   }
+
+  @Test
+  fun `horizontal epub semantic restore finds exact block and character page across font changes`() {
+    val layout16 = com.readicop.lettor.ui.reader.EpubPaginationLayoutKey(
+      availableWidthPx = 900,
+      availableHeightPx = 1500,
+      fontSizeSp = 16f,
+      lineHeightMultiplier = 1.45f,
+      readerFont = com.readicop.lettor.data.preferences.ReaderFont.LITERATA,
+      horizontalPaddingDp = 22
+    )
+    val layout24 = layout16.copy(fontSizeSp = 24f)
+
+    val pagesAt16 = listOf(
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(
+          com.readicop.lettor.ui.reader.PageSliceItem.HeadingSlice(0, 1, "Capítulo I"),
+          com.readicop.lettor.ui.reader.PageSliceItem.TextSlice(
+            blockIndex = 1,
+            text = androidx.compose.ui.text.AnnotatedString("Primera mitad del párrafo"),
+            fullBlockText = "Primera mitad del párrafo y segunda mitad del párrafo.",
+            startCharOffsetInBlock = 0
+          )
+        )
+      ),
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(
+          com.readicop.lettor.ui.reader.PageSliceItem.TextSlice(
+            blockIndex = 1,
+            text = androidx.compose.ui.text.AnnotatedString("y segunda mitad del párrafo."),
+            fullBlockText = "Primera mitad del párrafo y segunda mitad del párrafo.",
+            startCharOffsetInBlock = 26
+          )
+        )
+      )
+    )
+
+    val anchorOnPage1 = com.readicop.lettor.ui.reader.extractHorizontalAnchorForPage(pagesAt16, 1)
+    assertEquals(1 to 26, anchorOnPage1)
+
+    val savedPos = com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+      chapterId = "OEBPS/ch1.xhtml",
+      chapterIndex = 0,
+      subPage = 1,
+      anchorBlockIndex = anchorOnPage1.first,
+      anchorCharOffsetInBlock = anchorOnPage1.second,
+      chapterProgressFraction = 1f,
+      hasSemanticAnchor = true,
+      layoutKey = layout16
+    )
+
+    // Same layout restores subPage 1 directly
+    assertEquals(
+      1,
+      com.readicop.lettor.ui.reader.resolveHorizontalPageRestoreTarget(
+        saved = savedPos,
+        pages = pagesAt16,
+        currentLayoutKey = layout16
+      )
+    )
+
+    // Larger font splits into 4 pages: charOffset 26 in block 1 now sits on page index 2
+    val pagesAt24 = listOf(
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(com.readicop.lettor.ui.reader.PageSliceItem.HeadingSlice(0, 1, "Capítulo I"))
+      ),
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(
+          com.readicop.lettor.ui.reader.PageSliceItem.TextSlice(
+            blockIndex = 1,
+            text = androidx.compose.ui.text.AnnotatedString("Primera mitad "),
+            fullBlockText = "Primera mitad del párrafo y segunda mitad del párrafo.",
+            startCharOffsetInBlock = 0
+          )
+        )
+      ),
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(
+          com.readicop.lettor.ui.reader.PageSliceItem.TextSlice(
+            blockIndex = 1,
+            text = androidx.compose.ui.text.AnnotatedString("del párrafo y segunda "),
+            fullBlockText = "Primera mitad del párrafo y segunda mitad del párrafo.",
+            startCharOffsetInBlock = 14
+          )
+        )
+      ),
+      com.readicop.lettor.ui.reader.EpubRenderedPage(
+        listOf(
+          com.readicop.lettor.ui.reader.PageSliceItem.TextSlice(
+            blockIndex = 1,
+            text = androidx.compose.ui.text.AnnotatedString("mitad del párrafo."),
+            fullBlockText = "Primera mitad del párrafo y segunda mitad del párrafo.",
+            startCharOffsetInBlock = 36
+          )
+        )
+      )
+    )
+
+    assertEquals(
+      2,
+      com.readicop.lettor.ui.reader.resolveHorizontalPageRestoreTarget(
+        saved = savedPos,
+        pages = pagesAt24,
+        currentLayoutKey = layout24
+      )
+    )
+  }
+
+  @Test
+  fun `vertical and horizontal boundary guards block accidental chapter chaining during scroll`() {
+    // In-list scroll consumed during gesture must never trigger a chapter jump even at bottom
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = 0f,
+        dy = -240f,
+        swipeThresholdPx = 150f,
+        gestureScrolledInsideList = true,
+        gestureStartedScrollInProgress = false,
+        overscrollAccumulatedY = -200f
+      )
+    )
+
+    // Gesture begun while fling/scroll momentum was still active stops cleanly at chapter boundary
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = 0f,
+        dy = -240f,
+        swipeThresholdPx = 150f,
+        gestureScrolledInsideList = false,
+        gestureStartedScrollInProgress = true,
+        overscrollAccumulatedY = -240f
+      )
+    )
+
+    // Horizontal swipe while pager changed page or is mid-scroll must not jump chapters
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = true,
+        startedOnLastPage = false,
+        chapterIndex = 2,
+        totalChapters = 4,
+        dx = 220f,
+        dy = 0f,
+        swipeThresholdPx = 120f,
+        pagerSettledOnStartPage = false,
+        pagerScrollInProgress = false
+      )
+    )
+  }
+
+  @Test
+  fun `reader view model preserves semantic horizontal position by unique chapter id and bridges modes`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempEpub = copySampleEpub(context)
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      val prefsRepo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+      kotlinx.coroutines.runBlocking {
+        prefsRepo.setEpubScrollMode(false)
+      }
+      val repo = com.readicop.lettor.data.repository.LibraryRepository(
+        appContext = context,
+        bookDao = db.bookDao(),
+        bookmarkDao = db.bookmarkDao(),
+        highlightDao = db.highlightDao(),
+        vocabularyDao = db.vocabularyDao(),
+        importer = com.readicop.lettor.domain.engine.BookImporter(context),
+        backupManager = com.readicop.lettor.domain.engine.BackupManager(
+          context = context,
+          bookDao = db.bookDao(),
+          bookmarkDao = db.bookmarkDao(),
+          highlightDao = db.highlightDao(),
+          vocabularyDao = db.vocabularyDao()
+        ),
+        preferencesRepository = prefsRepo
+      )
+
+      val bookId = kotlinx.coroutines.runBlocking {
+        db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Don Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = tempEpub.absolutePath,
+            totalUnits = 4,
+            currentUnit = 0,
+            currentSubOffset = 0
+          )
+        )
+      }
+
+      runCatching {
+        androidx.work.WorkManager.initialize(
+          context,
+          androidx.work.Configuration.Builder().build()
+        )
+      }
+
+      val vm = com.readicop.lettor.ui.reader.ReaderViewModel(
+        appContext = context,
+        bookId = bookId,
+        initialUnit = -1,
+        repository = repo,
+        preferencesRepository = prefsRepo
+      )
+
+      var latestState = vm.uiState.value
+      val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+        vm.uiState.collect { latestState = it }
+      }
+
+      fun awaitState(
+        timeoutMs: Long = 5000L,
+        predicate: (com.readicop.lettor.ui.reader.ReaderUiState) -> Boolean
+      ): com.readicop.lettor.ui.reader.ReaderUiState {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+          org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+          val current = vm.uiState.value
+          latestState = current
+          if (predicate(current)) return current
+          Thread.sleep(15L)
+        }
+        throw AssertionError("Timed out waiting for ReaderUiState; last=$latestState")
+      }
+
+      try {
+        val loaded = awaitState {
+          it.contentState is com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        }
+        val ready0 = loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        val ch0 = ready0.activeChapter
+        val ch0Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(ch0, ready0.chapterStubs)
+        val layout16 = com.readicop.lettor.ui.reader.EpubPaginationLayoutKey(
+          availableWidthPx = 900,
+          availableHeightPx = 1500,
+          fontSizeSp = 16f,
+          lineHeightMultiplier = 1.45f,
+          readerFont = com.readicop.lettor.data.preferences.ReaderFont.LITERATA,
+          horizontalPaddingDp = 22
+        )
+
+        val ch0Pos = com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+          chapterId = ch0Id,
+          chapterIndex = 0,
+          subPage = 7,
+          anchorBlockIndex = 4,
+          anchorCharOffsetInBlock = 112,
+          chapterProgressFraction = 0.8f,
+          hasSemanticAnchor = true,
+          layoutKey = layout16
+        )
+        vm.onHorizontalPositionChanged(ch0, ch0Pos, 0.2f)
+
+        // Advance to chapter 1 and save its position
+        vm.jumpToUnit(1)
+        val atCh1 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1
+        }
+        val ch1 = (atCh1.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter
+        val ch1Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(ch1, ready0.chapterStubs)
+        vm.onHorizontalPositionChanged(
+          ch1,
+          com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+            chapterId = ch1Id,
+            chapterIndex = 1,
+            subPage = 2,
+            anchorBlockIndex = 2,
+            anchorCharOffsetInBlock = 45,
+            chapterProgressFraction = 0.3f,
+            hasSemanticAnchor = true,
+            layoutKey = layout16
+          ),
+          0.4f
+        )
+
+        // Switch to vertical scroll mode while in chapter 1, then go back to chapter 0:
+        // chapter 0's semantic anchor (block 4, char 112) must bridge into verticalChapterPositions!
+        vm.setEpubScrollMode(true)
+        awaitState { it.preferences.epubScrollMode }
+
+        vm.jumpToUnit(0)
+        val backCh0Vertical = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 0
+        }
+        val bridged = requireNotNull(backCh0Vertical.verticalChapterPositions[ch0Id])
+        assertEquals(4, bridged.blockIndex)
+        assertEquals(112, bridged.characterOffsetInBlock)
+      } finally {
+        collectJob.cancel()
+        vm.onReaderStopped()
+      }
+    } finally {
+      db.close()
+      tempEpub.delete()
+    }
+  }
 }
