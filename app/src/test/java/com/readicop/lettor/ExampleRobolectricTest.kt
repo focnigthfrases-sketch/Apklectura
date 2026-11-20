@@ -604,4 +604,137 @@ class ExampleRobolectricTest {
     val para2 = com.readicop.lettor.ui.reader.expandPdfParagraphRange(words, 7, 7)
     assertEquals(6..9, para2)
   }
+
+  @Test
+  fun `pdf engine extracts outline chapters including nested items and returns empty when missing`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    com.readicop.lettor.domain.engine.PdfBookSession.ensurePdfBoxInitialized(context)
+
+    val outlinedPdf = File(context.cacheDir, "test_outline.pdf")
+    val plainPdf = File(context.cacheDir, "test_no_outline.pdf")
+
+    try {
+      com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
+        val page0 = com.tom_roush.pdfbox.pdmodel.PDPage()
+        val page1 = com.tom_roush.pdfbox.pdmodel.PDPage()
+        val page2 = com.tom_roush.pdfbox.pdmodel.PDPage()
+        doc.addPage(page0)
+        doc.addPage(page1)
+        doc.addPage(page2)
+
+        val outline = com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline()
+        doc.documentCatalog.documentOutline = outline
+
+        val ch1 = com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem().apply {
+          title = "Prólogo"
+          setDestination(page0)
+        }
+        val ch2 = com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem().apply {
+          title = "Capítulo 1"
+          setDestination(page1)
+        }
+        val sub = com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem().apply {
+          title = "Sección 1.1"
+          setDestination(page2)
+        }
+        ch2.addLast(sub)
+        outline.addLast(ch1)
+        outline.addLast(ch2)
+
+        doc.save(outlinedPdf)
+      }
+
+      val extracted = com.tom_roush.pdfbox.pdmodel.PDDocument.load(outlinedPdf).use { doc ->
+        com.readicop.lettor.domain.engine.PdfBookSession.extractOutlineChapters(doc)
+      }
+      assertEquals(3, extracted.size)
+      assertEquals("Prólogo", extracted[0].title)
+      assertEquals(0, extracted[0].pageIndex)
+      assertEquals(0, extracted[0].level)
+
+      assertEquals("Capítulo 1", extracted[1].title)
+      assertEquals(1, extracted[1].pageIndex)
+      assertEquals(0, extracted[1].level)
+
+      assertEquals("Sección 1.1", extracted[2].title)
+      assertEquals(2, extracted[2].pageIndex)
+      assertEquals(1, extracted[2].level)
+
+      com.tom_roush.pdfbox.pdmodel.PDDocument().use { doc ->
+        doc.addPage(com.tom_roush.pdfbox.pdmodel.PDPage())
+        doc.save(plainPdf)
+      }
+      val emptyOutline = com.tom_roush.pdfbox.pdmodel.PDDocument.load(plainPdf).use { doc ->
+        com.readicop.lettor.domain.engine.PdfBookSession.extractOutlineChapters(doc)
+      }
+      assertTrue(emptyOutline.isEmpty())
+    } finally {
+      outlinedPdf.delete()
+      plainPdf.delete()
+    }
+  }
+
+  @Test
+  fun `pdf teardrop handle anchors sit flush at bottom corners of start and end words`() {
+    val words = listOf(
+      com.readicop.lettor.domain.engine.PdfGlyphWord(
+        index = 0,
+        text = "En",
+        rect = com.readicop.lettor.domain.engine.PdfNormalizedRect(0.10f, 0.20f, 0.20f, 0.25f),
+        charRects = emptyList()
+      ),
+      com.readicop.lettor.domain.engine.PdfGlyphWord(
+        index = 1,
+        text = "Mancha",
+        rect = com.readicop.lettor.domain.engine.PdfNormalizedRect(0.30f, 0.20f, 0.50f, 0.25f),
+        charRects = emptyList()
+      )
+    )
+    val pageText = com.readicop.lettor.domain.engine.PdfPageTextData(
+      pageIndex = 0,
+      words = words,
+      isScanned = false
+    )
+    val metrics = com.readicop.lettor.ui.reader.PdfPageRenderMetrics(
+      pageIndex = 0,
+      viewportPosInRoot = androidx.compose.ui.geometry.Offset.Zero,
+      viewportSize = androidx.compose.ui.unit.IntSize(1000, 1000),
+      basePageSizePx = androidx.compose.ui.geometry.Size(1000f, 1000f),
+      scale = 1f,
+      panOffset = androidx.compose.ui.geometry.Offset.Zero
+    )
+
+    val forward = com.readicop.lettor.ui.reader.computePdfSelectionGeometry(
+      selection = com.readicop.lettor.ui.reader.PdfWordSelection(pageIndex = 0, anchorWordA = 0, anchorWordB = 1),
+      pageText = pageText,
+      metrics = metrics,
+      overlayContainerPosInRoot = androidx.compose.ui.geometry.Offset.Zero
+    )
+    val startAnchor = requireNotNull(forward.anchorAPos)
+    val endAnchor = requireNotNull(forward.anchorBPos)
+    assertEquals(100f, startAnchor.x, 0.5f)
+    assertEquals(250f, startAnchor.y, 0.5f)
+    assertEquals(500f, endAnchor.x, 0.5f)
+    assertEquals(250f, endAnchor.y, 0.5f)
+
+    // Reversed anchors swap which handle attaches to left vs right while staying on bottom edge
+    val backward = com.readicop.lettor.ui.reader.computePdfSelectionGeometry(
+      selection = com.readicop.lettor.ui.reader.PdfWordSelection(pageIndex = 0, anchorWordA = 1, anchorWordB = 0),
+      pageText = pageText,
+      metrics = metrics,
+      overlayContainerPosInRoot = androidx.compose.ui.geometry.Offset.Zero
+    )
+    val revStartAnchor = requireNotNull(backward.anchorAPos)
+    val revEndAnchor = requireNotNull(backward.anchorBPos)
+    assertEquals(500f, revStartAnchor.x, 0.5f)
+    assertEquals(250f, revStartAnchor.y, 0.5f)
+    assertEquals(100f, revEndAnchor.x, 0.5f)
+    assertEquals(250f, revEndAnchor.y, 0.5f)
+  }
+
+  @Test
+  fun `ime back intercept helper hides keyboard only when ime height is positive`() {
+    assertTrue(com.readicop.lettor.ui.components.shouldHideImeInsteadOfDismissing(420))
+    assertFalse(com.readicop.lettor.ui.components.shouldHideImeInsteadOfDismissing(0))
+  }
 }

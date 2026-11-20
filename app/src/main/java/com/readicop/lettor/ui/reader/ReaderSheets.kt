@@ -25,8 +25,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -48,7 +46,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -80,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.readicop.lettor.data.local.BookFormat
 import com.readicop.lettor.data.local.BookmarkEntity
 import com.readicop.lettor.data.local.HighlightEntity
@@ -90,6 +88,9 @@ import com.readicop.lettor.data.preferences.ReaderTheme
 import com.readicop.lettor.domain.engine.BookQuestionAnswer
 import com.readicop.lettor.domain.engine.EpubChapterStub
 import com.readicop.lettor.domain.engine.EpubSearchHit
+import com.readicop.lettor.domain.engine.PdfChapterOutlineItem
+import com.readicop.lettor.ui.components.LettorImeBackDialogHandler
+import com.readicop.lettor.ui.components.LettorModalBottomSheet
 import com.readicop.lettor.ui.components.LettorRulerBrightnessSlider
 import com.readicop.lettor.ui.components.LettorThinSlider
 import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
@@ -355,7 +356,7 @@ fun ReaderAppearanceSheet(
     label = "more_settings_chevron"
   )
 
-  ModalBottomSheet(
+  LettorModalBottomSheet(
     onDismissRequest = onDismiss,
     containerColor = MaterialTheme.colorScheme.surface,
     contentColor = MaterialTheme.colorScheme.onSurface
@@ -762,6 +763,7 @@ fun ReaderAppearanceSheet(
 fun ReaderTocAndBookmarksSheet(
   format: BookFormat,
   chapterStubs: List<EpubChapterStub>,
+  pdfChapters: List<PdfChapterOutlineItem> = emptyList(),
   pdfPageCount: Int,
   currentUnit: Int,
   bookmarks: List<BookmarkEntity>,
@@ -774,7 +776,7 @@ fun ReaderTocAndBookmarksSheet(
 ) {
   var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
 
-  ModalBottomSheet(onDismissRequest = onDismiss) {
+  LettorModalBottomSheet(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -786,8 +788,9 @@ fun ReaderTocAndBookmarksSheet(
           onClick = { selectedTab = 0 },
           text = {
             Text(
-              if (format == BookFormat.EPUB) "Índice (${chapterStubs.size})"
-              else "Páginas ($pdfPageCount)"
+              if (format == BookFormat.EPUB) "Capítulos (${chapterStubs.size})"
+              else if (pdfChapters.isNotEmpty()) "Capítulos (${pdfChapters.size})"
+              else "Capítulos"
             )
           },
           modifier = Modifier.testTag("toc_tab_index")
@@ -842,31 +845,68 @@ fun ReaderTocAndBookmarksSheet(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
               }
             }
+          } else if (pdfChapters.isEmpty()) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(32.dp)
+                .testTag("pdf_empty_chapters_message"),
+              horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+              Text(
+                text = "Este PDF no incluye capítulos",
+                style = MaterialTheme.typography.titleSmall
+              )
+              Spacer(Modifier.height(4.dp))
+              Text(
+                text = "El documento no contiene un índice de capítulos.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
           } else {
-            LazyVerticalGrid(
-              columns = GridCells.Adaptive(minSize = 68.dp),
-              contentPadding = PaddingValues(20.dp),
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-              verticalArrangement = Arrangement.spacedBy(10.dp),
+            val activeChapterIdx = remember(pdfChapters, currentUnit) {
+              pdfChapters.indexOfLast { it.pageIndex <= currentUnit }
+            }
+            LazyColumn(
+              contentPadding = PaddingValues(vertical = 8.dp),
               modifier = Modifier.fillMaxWidth()
             ) {
-              items(pdfPageCount) { pageIdx ->
-                val isCurrent = pageIdx == currentUnit
-                Surface(
-                  onClick = {
-                    onJumpToUnit(pageIdx)
-                    onDismiss()
+              items(pdfChapters, key = { it.index }) { chapter ->
+                val isCurrent = chapter.index == activeChapterIdx
+                ListItem(
+                  headlineContent = {
+                    Text(
+                      text = chapter.title,
+                      fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                      color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                      maxLines = 2,
+                      overflow = TextOverflow.Ellipsis,
+                      modifier = Modifier.padding(start = (chapter.level * 12).dp)
+                    )
                   },
-                  shape = RoundedCornerShape(10.dp),
-                  color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                  Text(
-                    text = "${pageIdx + 1}",
-                    style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily),
-                    color = if (isCurrent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp)
-                  )
-                }
+                  leadingContent = {
+                    Text(
+                      text = "${chapter.index + 1}",
+                      style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
+                      color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  },
+                  trailingContent = {
+                    Text(
+                      text = "Pág. ${chapter.pageIndex + 1}",
+                      style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                      color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                  },
+                  modifier = Modifier
+                    .clickable {
+                      onJumpToUnit(chapter.pageIndex)
+                      onDismiss()
+                    }
+                    .testTag("toc_pdf_chapter_${chapter.index}")
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
               }
             }
           }
@@ -1026,7 +1066,7 @@ fun ReaderSearchSheet(
   var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
   var questionInput by remember(askQuestion) { mutableStateOf(askQuestion) }
 
-  ModalBottomSheet(onDismissRequest = onDismiss) {
+  LettorModalBottomSheet(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -1223,9 +1263,11 @@ fun AddBookmarkNoteDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
+    properties = DialogProperties(dismissOnBackPress = false),
     title = { Text("Guardar marcador y nota") },
     text = {
       Column {
+        LettorImeBackDialogHandler(onDismiss = onDismiss)
         Text(
           text = defaultLabel,
           style = MaterialTheme.typography.labelMedium,

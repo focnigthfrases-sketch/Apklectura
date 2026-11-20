@@ -107,7 +107,7 @@ internal fun isDeliberatePdfCenterTap(
   return nx in 0.22f..0.78f && ny in 0.18f..0.82f
 }
 
-private data class PdfPageRenderMetrics(
+internal data class PdfPageRenderMetrics(
   val pageIndex: Int,
   val viewportPosInRoot: Offset,
   val viewportSize: IntSize,
@@ -116,7 +116,7 @@ private data class PdfPageRenderMetrics(
   val panOffset: Offset
 )
 
-private data class PdfSelectionGeometry(
+internal data class PdfSelectionGeometry(
   val anchorAPos: Offset?,
   val anchorBPos: Offset?,
   val selectionBounds: Rect?
@@ -334,12 +334,11 @@ private fun overlayPointToPdfNorm(
   )
 }
 
-private fun computePdfSelectionGeometry(
+internal fun computePdfSelectionGeometry(
   selection: PdfWordSelection?,
   pageText: PdfPageTextData?,
   metrics: PdfPageRenderMetrics?,
-  overlayContainerPosInRoot: Offset,
-  handleHorizontalOffsetPx: Float
+  overlayContainerPosInRoot: Offset
 ): PdfSelectionGeometry {
   if (selection == null || pageText == null || pageText.isScanned || metrics == null) {
     return PdfSelectionGeometry(null, null, null)
@@ -357,16 +356,15 @@ private fun computePdfSelectionGeometry(
   val wordA = words[idxA]
   val wordB = words[idxB]
 
+  // Teardrop tip sits flush at the bottom-left (start) or bottom-right (end) corner of the
+  // selected word, pointing straight up toward the text without covering any letters.
   val normAX = if (isAStart) wordA.rect.left else wordA.rect.right
-  val normAY = (wordA.rect.top + wordA.rect.bottom) * 0.5f
+  val normAY = wordA.rect.bottom
   val normBX = if (isAStart) wordB.rect.right else wordB.rect.left
-  val normBY = (wordB.rect.top + wordB.rect.bottom) * 0.5f
+  val normBY = wordB.rect.bottom
 
-  val offsetAX = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
-  val offsetBX = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
-
-  val anchorAPos = pdfNormToOverlayPoint(normAX, normAY, metrics, overlayContainerPosInRoot) + Offset(offsetAX, 0f)
-  val anchorBPos = pdfNormToOverlayPoint(normBX, normBY, metrics, overlayContainerPosInRoot) + Offset(offsetBX, 0f)
+  val anchorAPos = pdfNormToOverlayPoint(normAX, normAY, metrics, overlayContainerPosInRoot)
+  val anchorBPos = pdfNormToOverlayPoint(normBX, normBY, metrics, overlayContainerPosInRoot)
 
   val s = minOf(idxA, idxB)
   val e = maxOf(idxA, idxB)
@@ -526,7 +524,7 @@ private fun PdfPaginatedReader(
   var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
-  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
+  val tipVerticalProbeOffsetPx = with(density) { 8.dp.toPx() }
   val contentInsets = rememberReaderContentInsets()
   val controlsTopInsets = rememberReaderControlsTopInsets()
   val controlsBottomInsets = rememberReaderControlsBottomInsets()
@@ -682,11 +680,9 @@ private fun PdfPaginatedReader(
         selection = sel,
         pageText = activePageText,
         metrics = activeMetrics,
-        overlayContainerPosInRoot = overlayContainerPosInRoot,
-        handleHorizontalOffsetPx = handleHorizontalOffsetPx
+        overlayContainerPosInRoot = overlayContainerPosInRoot
       )
       val locationLabel = "pág. ${sel.pageIndex + 1}"
-      val isAStart = sel.anchorWordA <= sel.anchorWordB
 
       if (selectedText.isNotEmpty()) {
         ReaderSelectionOverlay(
@@ -701,17 +697,24 @@ private fun PdfPaginatedReader(
           selectionBounds = geometry.selectionBounds,
           copyEnabled = !activePageText.isScanned,
           highlightEnabled = !activePageText.isScanned,
+          handleShape = SelectionHandleShape.TEARDROP,
           onDragAnchorA = { ptr ->
-            val xAdj = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
-            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
+            val norm = overlayPointToPdfNorm(
+              ptr - Offset(0f, tipVerticalProbeOffsetPx),
+              activeMetrics,
+              overlayContainerPosInRoot
+            )
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordA = hitWord)
             }
           },
           onDragAnchorB = { ptr ->
-            val xAdj = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
-            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
+            val norm = overlayPointToPdfNorm(
+              ptr - Offset(0f, tipVerticalProbeOffsetPx),
+              activeMetrics,
+              overlayContainerPosInRoot
+            )
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordB = hitWord)
@@ -1141,7 +1144,7 @@ private fun PdfScrollReader(
   var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
   var overlayContainerPosInRoot by remember { mutableStateOf(Offset.Zero) }
 
-  val handleHorizontalOffsetPx = with(density) { 8.dp.toPx() }
+  val tipVerticalProbeOffsetPx = with(density) { 8.dp.toPx() }
   val contentInsets = rememberReaderContentInsets()
   val controlsTopInsets = rememberReaderControlsTopInsets()
   val controlsBottomInsets = rememberReaderControlsBottomInsets()
@@ -1308,11 +1311,9 @@ private fun PdfScrollReader(
         selection = sel,
         pageText = activePageText,
         metrics = activeMetrics,
-        overlayContainerPosInRoot = overlayContainerPosInRoot,
-        handleHorizontalOffsetPx = handleHorizontalOffsetPx
+        overlayContainerPosInRoot = overlayContainerPosInRoot
       )
       val locationLabel = "pág. ${sel.pageIndex + 1}"
-      val isAStart = sel.anchorWordA <= sel.anchorWordB
 
       if (selectedText.isNotEmpty()) {
         ReaderSelectionOverlay(
@@ -1327,17 +1328,24 @@ private fun PdfScrollReader(
           selectionBounds = geometry.selectionBounds,
           copyEnabled = !activePageText.isScanned,
           highlightEnabled = !activePageText.isScanned,
+          handleShape = SelectionHandleShape.TEARDROP,
           onDragAnchorA = { ptr ->
-            val xAdj = if (isAStart) handleHorizontalOffsetPx else -handleHorizontalOffsetPx
-            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
+            val norm = overlayPointToPdfNorm(
+              ptr - Offset(0f, tipVerticalProbeOffsetPx),
+              activeMetrics,
+              overlayContainerPosInRoot
+            )
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordA = hitWord)
             }
           },
           onDragAnchorB = { ptr ->
-            val xAdj = if (isAStart) -handleHorizontalOffsetPx else handleHorizontalOffsetPx
-            val norm = overlayPointToPdfNorm(ptr + Offset(xAdj, 0f), activeMetrics, overlayContainerPosInRoot)
+            val norm = overlayPointToPdfNorm(
+              ptr - Offset(0f, tipVerticalProbeOffsetPx),
+              activeMetrics,
+              overlayContainerPosInRoot
+            )
             val hitWord = findNearestPdfWordIndex(activePageText.words, norm.x, norm.y)
             if (hitWord != null) {
               activeSelection = sel.copy(anchorWordB = hitWord)

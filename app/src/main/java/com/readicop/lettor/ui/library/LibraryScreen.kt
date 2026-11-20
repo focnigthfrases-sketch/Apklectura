@@ -81,7 +81,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -114,6 +113,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.window.DialogProperties
+import com.readicop.lettor.ui.components.LettorImeBackDialogHandler
+import com.readicop.lettor.ui.components.LettorModalBottomSheet
 import coil.compose.AsyncImage
 import com.readicop.lettor.R
 import com.readicop.lettor.data.local.BookEntity
@@ -651,7 +653,7 @@ fun LibraryScreen(
 
   // Book options sheet
   selectedBookForSheet?.let { book ->
-    ModalBottomSheet(onDismissRequest = { selectedBookForSheet = null }) {
+    LettorModalBottomSheet(onDismissRequest = { selectedBookForSheet = null }) {
       Column(
         modifier = Modifier
           .fillMaxWidth()
@@ -1277,6 +1279,7 @@ private fun EditBookMetadataDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
+    properties = DialogProperties(dismissOnBackPress = false),
     title = { Text("Editar portada y metadatos") },
     text = {
       Column(
@@ -1285,6 +1288,7 @@ private fun EditBookMetadataDialog(
           .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
       ) {
+        LettorImeBackDialogHandler(onDismiss = onDismiss)
         Row(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(12.dp)

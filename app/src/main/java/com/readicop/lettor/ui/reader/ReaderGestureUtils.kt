@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.mandatorySystemGestures
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsIgnoringVisibility
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.geometry.Offset
@@ -41,9 +39,8 @@ const val PDF_DELIBERATE_TAP_MAX_DURATION_MS = 260L
 fun rememberReaderContentInsets(): WindowInsets {
   val minEdgeMargin = WindowInsets(top = 10.dp, bottom = 14.dp)
   val cutout = WindowInsets.displayCutout
-  val systemBars = WindowInsets.systemBars
   val bottomGestures = WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom)
-  return minEdgeMargin.union(cutout).union(systemBars).union(bottomGestures)
+  return minEdgeMargin.union(cutout).union(bottomGestures)
 }
 
 /**

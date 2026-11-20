@@ -38,7 +38,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -66,6 +65,7 @@ import com.readicop.lettor.data.local.HighlightColor
 import com.readicop.lettor.domain.engine.ChapterSummaryResult
 import com.readicop.lettor.domain.engine.DictionaryEntry
 import com.readicop.lettor.domain.engine.LocalDictionaryAndTranslator
+import com.readicop.lettor.ui.components.LettorModalBottomSheet
 import com.readicop.lettor.ui.theme.LiterataFamily
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
 
@@ -114,7 +114,7 @@ fun FragmentToolsSheet(
     else LocalDictionaryAndTranslator.translateLocally(effectiveFragment)
   }
 
-  ModalBottomSheet(onDismissRequest = onDismiss) {
+  LettorModalBottomSheet(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -488,7 +488,7 @@ fun ChapterSummarySheet(
   summary: ChapterSummaryResult,
   onDismiss: () -> Unit
 ) {
-  ModalBottomSheet(onDismissRequest = onDismiss) {
+  LettorModalBottomSheet(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
         .fillMaxWidth()

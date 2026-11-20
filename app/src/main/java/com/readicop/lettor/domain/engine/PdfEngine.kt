@@ -144,6 +144,13 @@ data class PdfPageTextData(
   val isScanned: Boolean
 )
 
+data class PdfChapterOutlineItem(
+  val index: Int,
+  val title: String,
+  val pageIndex: Int,
+  val level: Int = 0
+)
+
 class PdfBookSession(
   private val file: File,
   private val appContext: Context? = null
@@ -271,6 +278,18 @@ class PdfBookSession(
     }
   }
 
+  suspend fun extractOutline(): List<PdfChapterOutlineItem> = withContext(Dispatchers.IO) {
+    textMutex.withLock {
+      runCatching {
+        ensurePdfBoxInitialized(appContext)
+        val doc = pdDocument ?: PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).also {
+          pdDocument = it
+        }
+        extractOutlineChapters(doc)
+      }.getOrDefault(emptyList())
+    }
+  }
+
   override fun close() {
     runCatching { renderer?.close() }
     runCatching { pfd?.close() }
@@ -383,6 +402,65 @@ class PdfBookSession(
         words = collectedWords,
         isScanned = collectedWords.isEmpty()
       )
+    }
+
+    fun extractOutlineChapters(doc: PDDocument): List<PdfChapterOutlineItem> {
+      val outline = doc.documentCatalog?.documentOutline ?: return emptyList()
+      val pageCount = doc.numberOfPages
+      if (pageCount <= 0) return emptyList()
+
+      val pageLookup = HashMap<com.tom_roush.pdfbox.cos.COSDictionary, Int>(pageCount)
+      doc.pages.forEachIndexed { idx, page ->
+        pageLookup[page.cosObject] = idx
+      }
+
+      val result = mutableListOf<PdfChapterOutlineItem>()
+      val visited = HashSet<com.tom_roush.pdfbox.cos.COSDictionary>()
+
+      fun walk(
+        node: com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode,
+        level: Int
+      ) {
+        for (child in node.children()) {
+          val dict = child.cosObject
+          if (dict != null && !visited.add(dict)) continue
+
+          val title = child.title?.trim().orEmpty()
+          if (title.isNotEmpty()) {
+            val pageIndex = runCatching {
+              val destPage = child.findDestinationPage(doc)
+              if (destPage != null) {
+                pageLookup[destPage.cosObject] ?: doc.pages.indexOf(destPage)
+              } else {
+                val directDest = child.destination
+                  as? com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
+                val actionDest = (child.action as? com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo)
+                  ?.destination
+                  as? com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
+                val pageDest = directDest ?: actionDest
+                pageDest?.retrievePageNumber()?.takeIf { it >= 0 }
+                  ?: pageDest?.page?.let { p -> pageLookup[p.cosObject] ?: doc.pages.indexOf(p) }
+                  ?: -1
+              }
+            }.getOrDefault(-1)
+
+            if (pageIndex in 0 until pageCount) {
+              result.add(
+                PdfChapterOutlineItem(
+                  index = result.size,
+                  title = title,
+                  pageIndex = pageIndex,
+                  level = level
+                )
+              )
+            }
+          }
+          walk(child, (level + 1).coerceAtMost(3))
+        }
+      }
+
+      walk(outline, 0)
+      return result
     }
 
     fun inspectAndExtractCover(pdfFile: File, coverDestFile: File?): Int {

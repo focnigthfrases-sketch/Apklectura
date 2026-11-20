@@ -75,6 +75,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -143,9 +144,28 @@ fun ReaderScreen(
       window.attributes.layoutInDisplayCutoutMode
     } else 0
   }
+  val initialLightStatusBars = remember(activity, view) {
+    activity?.window?.let { w -> WindowCompat.getInsetsController(w, view).isAppearanceLightStatusBars } ?: true
+  }
+  val initialLightNavBars = remember(activity, view) {
+    activity?.window?.let { w -> WindowCompat.getInsetsController(w, view).isAppearanceLightNavigationBars } ?: true
+  }
 
-  val applyImmersiveMode = remember(activity, view) {
-    {
+  val anyModalOpen = showAppearanceSheet ||
+    showTocSheet ||
+    showSearchSheet ||
+    activeFragment != null ||
+    showAddNoteDialog ||
+    uiState.sleepTimerExpiredDialog
+
+  val surfaceColors = uiState.preferences.readerTheme.colors()
+
+  val latestControlsVisible by rememberUpdatedState(controlsVisible)
+  val latestAnyModalOpen by rememberUpdatedState(anyModalOpen)
+  val latestIsDarkSurface by rememberUpdatedState(surfaceColors.isDark)
+
+  val syncSystemBars = remember(activity, view) {
+    { showBars: Boolean, isDarkSurface: Boolean ->
       val window = activity?.window
       if (window != null) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -160,12 +180,18 @@ fun ReaderScreen(
         val controller = WindowCompat.getInsetsController(window, view)
         controller.systemBarsBehavior =
           WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.isAppearanceLightStatusBars = !isDarkSurface
+        controller.isAppearanceLightNavigationBars = !isDarkSurface
+        if (showBars) {
+          controller.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+          controller.hide(WindowInsetsCompat.Type.systemBars())
+        }
       }
     }
   }
 
-  val restoreNormalSystemBars = remember(activity, view, initialCutoutMode) {
+  val restoreNormalSystemBars = remember(activity, view, initialCutoutMode, initialLightStatusBars, initialLightNavBars) {
     {
       val window = activity?.window
       if (window != null) {
@@ -176,6 +202,8 @@ fun ReaderScreen(
         }
         val controller = WindowCompat.getInsetsController(window, view)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+        controller.isAppearanceLightStatusBars = initialLightStatusBars
+        controller.isAppearanceLightNavigationBars = initialLightNavBars
         controller.show(WindowInsetsCompat.Type.systemBars())
       }
     }
@@ -189,34 +217,29 @@ fun ReaderScreen(
 
   BackHandler(onBack = handleExit)
 
-  // Enter immersive reading mode (status + navigation bars hidden, transient reveal by edge swipe)
-  // and restore normal system bars upon exiting the reader.
-  DisposableEffect(activity, view, applyImmersiveMode, restoreNormalSystemBars) {
-    applyImmersiveMode()
+  // Enter immersive reading mode on launch and restore normal system bars upon exiting the reader.
+  DisposableEffect(activity, view, syncSystemBars, restoreNormalSystemBars) {
+    syncSystemBars(false, latestIsDarkSurface)
     onDispose {
       restoreNormalSystemBars()
     }
   }
 
-  val anyModalOpen = showAppearanceSheet ||
-    showTocSheet ||
-    showSearchSheet ||
-    activeFragment != null ||
-    showAddNoteDialog ||
-    uiState.sleepTimerExpiredDialog
-
-  LaunchedEffect(anyModalOpen) {
-    if (!anyModalOpen) {
-      applyImmersiveMode()
+  // Synchronize Android status & navigation bars with the reader's top and bottom controls.
+  LaunchedEffect(controlsVisible, anyModalOpen, surfaceColors.isDark) {
+    if (controlsVisible) {
+      syncSystemBars(true, surfaceColors.isDark)
+    } else if (!anyModalOpen) {
+      syncSystemBars(false, surfaceColors.isDark)
     }
   }
 
   val lifecycleOwner = LocalLifecycleOwner.current
-  DisposableEffect(lifecycleOwner, viewModel, applyImmersiveMode) {
+  DisposableEffect(lifecycleOwner, viewModel, syncSystemBars) {
     val observer = LifecycleEventObserver { _, event ->
       when (event) {
         Lifecycle.Event.ON_RESUME -> {
-          applyImmersiveMode()
+          syncSystemBars(latestControlsVisible || latestAnyModalOpen, latestIsDarkSurface)
           viewModel.onReaderResumed()
         }
         Lifecycle.Event.ON_STOP -> viewModel.onReaderStopped()
@@ -273,7 +296,6 @@ fun ReaderScreen(
 
   val controlsTopInsets = rememberReaderControlsTopInsets()
   val controlsBottomInsets = rememberReaderControlsBottomInsets()
-  val surfaceColors = uiState.preferences.readerTheme.colors()
   val isBookmarked = uiState.bookmarks.any { it.unitIndex == uiState.currentUnit }
 
   val copyPlainSelection: (String) -> Unit = { selectedText ->
@@ -953,10 +975,13 @@ fun ReaderScreen(
   // TOC, Bookmarks & Highlights/Notes Sheet
   if (showTocSheet && uiState.book != null) {
     val stubs = (uiState.contentState as? ReaderContentState.EpubReady)?.chapterStubs.orEmpty()
-    val pdfCount = (uiState.contentState as? ReaderContentState.PdfReady)?.pageCount ?: 0
+    val pdfReady = uiState.contentState as? ReaderContentState.PdfReady
+    val pdfCount = pdfReady?.pageCount ?: 0
+    val pdfChapters = pdfReady?.chapters.orEmpty()
     ReaderTocAndBookmarksSheet(
       format = uiState.book!!.format,
       chapterStubs = stubs,
+      pdfChapters = pdfChapters,
       pdfPageCount = pdfCount,
       currentUnit = uiState.currentUnit,
       bookmarks = uiState.bookmarks,

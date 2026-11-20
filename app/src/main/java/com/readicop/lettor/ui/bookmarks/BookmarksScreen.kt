@@ -58,11 +58,13 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readicop.lettor.data.local.BookmarkWithBook
 import com.readicop.lettor.data.local.HighlightWithBook
 import com.readicop.lettor.data.local.VocabularyEntity
 import com.readicop.lettor.ui.components.FormatTagPill
+import com.readicop.lettor.ui.components.LettorImeBackDialogHandler
 import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
 import com.readicop.lettor.ui.theme.LiterataFamily
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
@@ -210,15 +212,19 @@ fun BookmarksScreen(
     var wordInput by remember { mutableStateOf("") }
     AlertDialog(
       onDismissRequest = { showAddWordDialog = false },
+      properties = DialogProperties(dismissOnBackPress = false),
       title = { Text("Añadir palabra al vocabulario") },
       text = {
-        OutlinedTextField(
-          value = wordInput,
-          onValueChange = { wordInput = it },
-          label = { Text("Palabra (ej. hidalgo, sosiego…)") },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth().testTag("manual_vocab_input")
-        )
+        Column {
+          LettorImeBackDialogHandler(onDismiss = { showAddWordDialog = false })
+          OutlinedTextField(
+            value = wordInput,
+            onValueChange = { wordInput = it },
+            label = { Text("Palabra (ej. hidalgo, sosiego…)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("manual_vocab_input")
+          )
+        }
       },
       confirmButton = {
         TextButton(

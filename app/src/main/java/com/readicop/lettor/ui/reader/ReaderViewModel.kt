@@ -28,6 +28,7 @@ import com.readicop.lettor.domain.engine.LazyEpubSession
 import com.readicop.lettor.domain.engine.LocalBookIntelligence
 import com.readicop.lettor.domain.engine.LocalDictionaryAndTranslator
 import com.readicop.lettor.domain.engine.PdfBookSession
+import com.readicop.lettor.domain.engine.PdfChapterOutlineItem
 import com.readicop.lettor.domain.engine.TranslationResult
 import com.readicop.lettor.domain.engine.TtsReaderController
 import com.readicop.lettor.domain.engine.TtsState
@@ -54,7 +55,11 @@ sealed interface ReaderContentState {
     val chapterStubs: List<EpubChapterStub>,
     val activeChapter: EpubChapter
   ) : ReaderContentState
-  data class PdfReady(val pageCount: Int, val session: PdfBookSession) : ReaderContentState
+  data class PdfReady(
+    val pageCount: Int,
+    val session: PdfBookSession,
+    val chapters: List<PdfChapterOutlineItem> = emptyList()
+  ) : ReaderContentState
   data class Error(val message: String) : ReaderContentState
 }
 
@@ -230,8 +235,9 @@ class ReaderViewModel(
               contentStateFlow.value = ReaderContentState.Error("El PDF no contiene páginas legibles.")
             } else {
               val safeUnit = startUnit.coerceIn(0, pageCount - 1)
+              val chapters = session.extractOutline()
               currentUnitFlow.value = safeUnit
-              contentStateFlow.value = ReaderContentState.PdfReady(pageCount, session)
+              contentStateFlow.value = ReaderContentState.PdfReady(pageCount, session, chapters)
               saveProgressInternal(book, safeUnit, 0, pageCount)
             }
           }
