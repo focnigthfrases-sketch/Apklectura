@@ -7,6 +7,8 @@ import com.readicop.lettor.domain.engine.LazyEpubSession
 import com.readicop.lettor.domain.engine.LocalBookIntelligence
 import com.readicop.lettor.domain.engine.LocalDictionaryAndTranslator
 import java.io.File
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -736,5 +738,344 @@ class ExampleRobolectricTest {
   fun `ime back intercept helper hides keyboard only when ime height is positive`() {
     assertTrue(com.readicop.lettor.ui.components.shouldHideImeInsteadOfDismissing(420))
     assertFalse(com.readicop.lettor.ui.components.shouldHideImeInsteadOfDismissing(0))
+  }
+
+  @Test
+  fun `reader preferences persist font sizes below 14sp down to 8sp and brightness down to 1 percent`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val repo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+    kotlinx.coroutines.runBlocking {
+      repo.setFontSizeSp(10f)
+      val after10 = repo.preferencesFlow.first()
+      assertEquals(10f, after10.fontSizeSp, 0.01f)
+
+      repo.setFontSizeSp(5f) // clamped at MIN_READER_FONT_SIZE_SP (8f)
+      val afterMin = repo.preferencesFlow.first()
+      assertEquals(com.readicop.lettor.data.preferences.MIN_READER_FONT_SIZE_SP, afterMin.fontSizeSp, 0.01f)
+
+      repo.setReaderBrightness(0.02f)
+      val after2Pct = repo.preferencesFlow.first()
+      assertEquals(0.02f, after2Pct.readerBrightness, 0.001f)
+
+      repo.setReaderBrightness(0.0f) // clamped at MIN_READER_BRIGHTNESS (0.01f), not stuck at 0.05f
+      val afterMinBright = repo.preferencesFlow.first()
+      assertEquals(com.readicop.lettor.data.preferences.MIN_READER_BRIGHTNESS, afterMinBright.readerBrightness, 0.001f)
+
+      repo.setReaderBrightness(-1f) // Auto
+      val afterAuto = repo.preferencesFlow.first()
+      assertEquals(-1f, afterAuto.readerBrightness, 0.001f)
+      assertEquals(
+        android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE,
+        com.readicop.lettor.ui.reader.resolveWindowBrightness(afterAuto.readerBrightness),
+        0.001f
+      )
+      assertEquals(
+        0.02f,
+        com.readicop.lettor.ui.reader.resolveWindowBrightness(0.02f),
+        0.001f
+      )
+    }
+  }
+
+  @Test
+  fun `epub boundary swipe advances directly to next chapter only from last page on forward gesture`() {
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NEXT_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = false,
+        startedOnLastPage = true,
+        chapterIndex = 2,
+        totalChapters = 5,
+        dx = -180f,
+        dy = 20f,
+        swipeThresholdPx = 100f
+      )
+    )
+
+    // Arriving at last page from previous page must NOT skip straight to next chapter
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = false,
+        startedOnLastPage = false,
+        chapterIndex = 2,
+        totalChapters = 5,
+        dx = -220f,
+        dy = 10f,
+        swipeThresholdPx = 100f
+      )
+    )
+
+    // Last chapter cannot advance further
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = false,
+        startedOnLastPage = true,
+        chapterIndex = 4,
+        totalChapters = 5,
+        dx = -220f,
+        dy = 0f,
+        swipeThresholdPx = 100f
+      )
+    )
+
+    // Vertical scroll or tiny drag does not advance
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = false,
+        startedOnLastPage = true,
+        chapterIndex = 1,
+        totalChapters = 5,
+        dx = -150f,
+        dy = 180f,
+        swipeThresholdPx = 100f
+      )
+    )
+
+    // Backward swipe on first page goes to previous chapter
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.PREVIOUS_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = true,
+        startedOnLastPage = false,
+        chapterIndex = 2,
+        totalChapters = 5,
+        dx = 180f,
+        dy = 15f,
+        swipeThresholdPx = 100f
+      )
+    )
+  }
+
+  @Test
+  fun `epub vertical boundary scroll transitions directly between chapters only at scroll limits`() {
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NEXT_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = 12f,
+        dy = -160f,
+        swipeThresholdPx = 90f
+      )
+    )
+
+    // Scrolling to reach bottom mid-gesture must stop at end of chapter first
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = false,
+        startedAtBottom = false,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = 0f,
+        dy = -220f,
+        swipeThresholdPx = 90f
+      )
+    )
+
+    // Horizontal swipe or short drag must not change chapter
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = 220f,
+        dy = -110f,
+        swipeThresholdPx = 90f
+      )
+    )
+
+    // Pulling down at top goes back to previous chapter
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.PREVIOUS_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalBoundaryScroll(
+        startedAtTop = true,
+        startedAtBottom = false,
+        stillAtTop = true,
+        stillAtBottom = false,
+        chapterIndex = 2,
+        totalChapters = 4,
+        dx = 10f,
+        dy = 150f,
+        swipeThresholdPx = 90f
+      )
+    )
+  }
+
+  @Test
+  fun `epub pages cache reuses computed chapter pages across switches unless layout changes`() {
+    val cache = com.readicop.lettor.ui.reader.EpubPagesCache<String>()
+    val layoutA = com.readicop.lettor.ui.reader.EpubPaginationLayoutKey(
+      availableWidthPx = 900,
+      availableHeightPx = 1600,
+      fontSizeSp = 16f,
+      lineHeightMultiplier = 1.45f,
+      readerFont = com.readicop.lettor.data.preferences.ReaderFont.LITERATA,
+      horizontalPaddingDp = 22
+    )
+    var ch0Computations = 0
+    var ch1Computations = 0
+
+    val ch0First = cache.getOrCompute(0, layoutA) {
+      ch0Computations++
+      listOf("p0-0", "p0-1", "p0-2")
+    }
+    cache.getOrCompute(1, layoutA) {
+      ch1Computations++
+      listOf("p1-0", "p1-1")
+    }
+    val ch0Returned = cache.getOrCompute(0, layoutA) {
+      ch0Computations++
+      listOf("recomputed")
+    }
+
+    assertEquals(1, ch0Computations)
+    assertEquals(1, ch1Computations)
+    assertEquals(ch0First, ch0Returned)
+    assertEquals(2, cache.cachedChapterCount)
+
+    // Changing font size invalidates cached pagination cleanly
+    val layoutB = layoutA.copy(fontSizeSp = 12f)
+    cache.getOrCompute(0, layoutB) {
+      ch0Computations++
+      listOf("p0-smaller-font")
+    }
+    assertEquals(2, ch0Computations)
+    assertEquals(1, cache.cachedChapterCount)
+  }
+
+  @Test
+  fun `reader view model remembers and restores last read page per epub chapter when switching back`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempEpub = copySampleEpub(context)
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      val prefsRepo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+      val repo = com.readicop.lettor.data.repository.LibraryRepository(
+        appContext = context,
+        bookDao = db.bookDao(),
+        bookmarkDao = db.bookmarkDao(),
+        highlightDao = db.highlightDao(),
+        vocabularyDao = db.vocabularyDao(),
+        importer = com.readicop.lettor.domain.engine.BookImporter(context),
+        backupManager = com.readicop.lettor.domain.engine.BackupManager(
+          context = context,
+          bookDao = db.bookDao(),
+          bookmarkDao = db.bookmarkDao(),
+          highlightDao = db.highlightDao(),
+          vocabularyDao = db.vocabularyDao()
+        ),
+        preferencesRepository = prefsRepo
+      )
+
+      val bookId = kotlinx.coroutines.runBlocking {
+        db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Don Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = tempEpub.absolutePath,
+            totalUnits = 4,
+            currentUnit = 0,
+            currentSubOffset = 0
+          )
+        )
+      }
+
+      runCatching {
+        androidx.work.WorkManager.initialize(
+          context,
+          androidx.work.Configuration.Builder().build()
+        )
+      }
+
+      val vm = com.readicop.lettor.ui.reader.ReaderViewModel(
+        appContext = context,
+        bookId = bookId,
+        initialUnit = -1,
+        repository = repo,
+        preferencesRepository = prefsRepo
+      )
+
+      var latestState = vm.uiState.value
+      val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+        vm.uiState.collect { latestState = it }
+      }
+
+      fun awaitState(
+        timeoutMs: Long = 5000L,
+        predicate: (com.readicop.lettor.ui.reader.ReaderUiState) -> Boolean
+      ): com.readicop.lettor.ui.reader.ReaderUiState {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+          org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+          val current = vm.uiState.value
+          latestState = current
+          if (predicate(current)) return current
+          Thread.sleep(15L)
+        }
+        throw AssertionError("Timed out waiting for ReaderUiState; last=$latestState")
+      }
+
+      try {
+        val loaded = awaitState {
+          it.contentState is com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        }
+        assertEquals(0, (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter.index)
+
+        // User reads Chapter 1 (index 0) up to page 15 (0-based index 14)
+        vm.onPositionChanged(unitIndex = 0, subOffset = 14, unitProgressFraction = 0.2f)
+        assertEquals(14, vm.rememberedSubOffsetForChapter(0))
+
+        // Advance to Chapter 2 (index 1) and read up to page 3 (0-based index 2)
+        vm.jumpToUnit(1)
+        val atCh1 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1
+        }
+        assertEquals(0, atCh1.currentSubOffset)
+        vm.onPositionChanged(unitIndex = 1, subOffset = 2, unitProgressFraction = 0.4f)
+        assertEquals(2, vm.rememberedSubOffsetForChapter(1))
+
+        // Return to Chapter 1 (index 0): must restore page 15 (0-based 14), NOT reset to 0
+        vm.jumpToUnit(0)
+        val backAtCh0 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 0
+        }
+        assertEquals(14, backAtCh0.currentSubOffset)
+
+        // Advancing back to Chapter 2 (index 1) restores page 3 (0-based 2)
+        vm.jumpToUnit(1)
+        val backAtCh1 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1
+        }
+        assertEquals(2, backAtCh1.currentSubOffset)
+      } finally {
+        collectJob.cancel()
+        vm.onReaderStopped()
+      }
+    } finally {
+      db.close()
+      tempEpub.delete()
+    }
   }
 }

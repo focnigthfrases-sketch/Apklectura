@@ -90,6 +90,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.readicop.lettor.data.local.BookFormat
+import com.readicop.lettor.data.preferences.MAX_READER_BRIGHTNESS
+import com.readicop.lettor.data.preferences.MIN_READER_BRIGHTNESS
 import com.readicop.lettor.data.preferences.OrientationLockMode
 import com.readicop.lettor.domain.engine.EpubBlock
 import com.readicop.lettor.ui.components.LettorThinSlider
@@ -108,6 +110,13 @@ private data class ActiveFragmentSelection(
   val spokenIndex: Int?,
   val hasSelection: Boolean
 )
+
+internal fun resolveWindowBrightness(readerBrightness: Float): Float =
+  if (readerBrightness < 0f) {
+    WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+  } else {
+    readerBrightness.coerceIn(MIN_READER_BRIGHTNESS, MAX_READER_BRIGHTNESS)
+  }
 
 @Composable
 fun ReaderScreen(
@@ -259,20 +268,20 @@ fun ReaderScreen(
     onDispose { view.keepScreenOn = false }
   }
 
-  // Per-reader brightness override
+  // Per-reader brightness override (update without resetting to system brightness between ticks)
   val readerBrightness = uiState.preferences.readerBrightness
-  DisposableEffect(activity, readerBrightness) {
-    val window = activity?.window
-    if (window != null) {
-      val lp = window.attributes
-      lp.screenBrightness = if (readerBrightness < 0f) {
-        WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-      } else {
-        readerBrightness.coerceIn(0.05f, 1.0f)
-      }
+  LaunchedEffect(activity, readerBrightness) {
+    val window = activity?.window ?: return@LaunchedEffect
+    val lp = window.attributes
+    val targetBrightness = resolveWindowBrightness(readerBrightness)
+    if (lp.screenBrightness != targetBrightness) {
+      lp.screenBrightness = targetBrightness
       window.attributes = lp
     }
+  }
+  DisposableEffect(activity) {
     onDispose {
+      val window = activity?.window
       if (window != null) {
         val lp = window.attributes
         lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
@@ -411,6 +420,7 @@ fun ReaderScreen(
           onPositionChanged = { chIdx, subPage, overall ->
             viewModel.onPositionChanged(chIdx, subPage, overall)
           },
+          onSelectChapter = viewModel::jumpToUnit,
           onVisibleBlockChanged = { blockIdx ->
             currentVisibleBlockIndex = blockIdx
           },

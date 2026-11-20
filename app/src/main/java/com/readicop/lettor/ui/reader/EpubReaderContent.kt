@@ -5,6 +5,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,20 +32,14 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +55,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -80,6 +77,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.readicop.lettor.data.local.HighlightEntity
+import com.readicop.lettor.data.preferences.ReaderFont
 import com.readicop.lettor.data.preferences.ReaderPreferences
 import com.readicop.lettor.domain.engine.EpubBlock
 import com.readicop.lettor.domain.engine.EpubChapter
@@ -89,9 +87,87 @@ import com.readicop.lettor.ui.theme.JetBrainsMonoFamily
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
 import com.readicop.lettor.ui.theme.ReaderSurfaceColors
 import com.readicop.lettor.ui.theme.fontFamily
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+internal enum class EpubBoundaryAction {
+  NONE,
+  NEXT_CHAPTER,
+  PREVIOUS_CHAPTER
+}
+
+internal fun resolveEpubBoundarySwipe(
+  startedOnFirstPage: Boolean,
+  startedOnLastPage: Boolean,
+  chapterIndex: Int,
+  totalChapters: Int,
+  dx: Float,
+  dy: Float,
+  swipeThresholdPx: Float
+): EpubBoundaryAction {
+  if (abs(dx) < swipeThresholdPx) return EpubBoundaryAction.NONE
+  if (abs(dx) <= abs(dy) * 1.35f) return EpubBoundaryAction.NONE
+  return when {
+    dx < -swipeThresholdPx && startedOnLastPage && chapterIndex < totalChapters - 1 ->
+      EpubBoundaryAction.NEXT_CHAPTER
+    dx > swipeThresholdPx && startedOnFirstPage && chapterIndex > 0 ->
+      EpubBoundaryAction.PREVIOUS_CHAPTER
+    else -> EpubBoundaryAction.NONE
+  }
+}
+
+internal fun resolveEpubVerticalBoundaryScroll(
+  startedAtTop: Boolean,
+  startedAtBottom: Boolean,
+  stillAtTop: Boolean,
+  stillAtBottom: Boolean,
+  chapterIndex: Int,
+  totalChapters: Int,
+  dx: Float,
+  dy: Float,
+  swipeThresholdPx: Float
+): EpubBoundaryAction {
+  if (abs(dy) < swipeThresholdPx) return EpubBoundaryAction.NONE
+  if (abs(dy) <= abs(dx) * 1.25f) return EpubBoundaryAction.NONE
+  return when {
+    dy < -swipeThresholdPx && startedAtBottom && stillAtBottom && chapterIndex < totalChapters - 1 ->
+      EpubBoundaryAction.NEXT_CHAPTER
+    dy > swipeThresholdPx && startedAtTop && stillAtTop && chapterIndex > 0 ->
+      EpubBoundaryAction.PREVIOUS_CHAPTER
+    else -> EpubBoundaryAction.NONE
+  }
+}
+
+internal data class EpubPaginationLayoutKey(
+  val availableWidthPx: Int,
+  val availableHeightPx: Int,
+  val fontSizeSp: Float,
+  val lineHeightMultiplier: Float,
+  val readerFont: ReaderFont,
+  val horizontalPaddingDp: Int
+)
+
+internal class EpubPagesCache<T> {
+  private var activeLayoutKey: EpubPaginationLayoutKey? = null
+  private val pagesByChapter = mutableMapOf<Int, List<T>>()
+
+  val cachedChapterCount: Int
+    get() = pagesByChapter.size
+
+  fun getOrCompute(
+    chapterIndex: Int,
+    layoutKey: EpubPaginationLayoutKey,
+    compute: () -> List<T>
+  ): List<T> {
+    if (activeLayoutKey != layoutKey) {
+      activeLayoutKey = layoutKey
+      pagesByChapter.clear()
+    }
+    return pagesByChapter.getOrPut(chapterIndex, compute)
+  }
+}
 
 data class EpubCharPosition(
   val blockIndex: Int,
@@ -510,6 +586,10 @@ fun EpubReaderContent(
   onCopyPlainText: (String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPositionChanged: (chapterIndex: Int, subPage: Int, overallProgress: Float) -> Unit,
+  onSelectChapter: (chapterIndex: Int) -> Unit = { nextIdx ->
+    val prog = (nextIdx + 1).toFloat() / chapterStubs.size.coerceAtLeast(1)
+    onPositionChanged(nextIdx, 0, prog)
+  },
   onVisibleBlockChanged: (Int) -> Unit = {},
   onActiveSelectionInfoChanged: (
     startBlockIndex: Int,
@@ -520,6 +600,7 @@ fun EpubReaderContent(
   ) -> Unit = { _, _, _, _, _ -> },
   modifier: Modifier = Modifier
 ) {
+  val pagesCache = remember { EpubPagesCache<EpubRenderedPage>() }
   val chapterHighlights = remember(highlights, activeChapter.index) {
     highlights.filter { it.unitIndex == activeChapter.index && it.blockIndex >= 0 }
   }
@@ -566,66 +647,73 @@ fun EpubReaderContent(
   }
 
   if (preferences.epubScrollMode) {
-    EpubScrollReader(
-      chapterStubs = chapterStubs,
-      chapter = activeChapter,
-      surfaceColors = surfaceColors,
-      preferences = preferences,
-      imageCache = imageCache,
-      chapterHighlights = chapterHighlights,
-      spokenIndexByBlock = spokenIndexByBlock,
-      ttsActiveBlockIndex = ttsActiveBlockIndex,
-      isAutoScrolling = isAutoScrolling,
-      autoScrollSpeed = autoScrollSpeed,
-      topOverlayClearanceDp = topOverlayClearanceDp,
-      activeSelection = activeSelection,
-      onSelectionChanged = { activeSelection = it },
-      onRequestImage = onRequestImage,
-      onToggleControls = onToggleControls,
-      onOpenFragmentTools = onOpenFragmentTools,
-      onCopyPlainText = onCopyPlainText,
-      onShareSelection = onShareSelection,
-      onSelectChapter = { nextIdx ->
-        activeSelection = null
-        val prog = (nextIdx + 1).toFloat() / chapterStubs.size.coerceAtLeast(1)
-        onPositionChanged(nextIdx, 0, prog)
-      },
-      onVisibleBlockChanged = onVisibleBlockChanged,
-      modifier = modifier
-    )
+    key(activeChapter.index) {
+      EpubScrollReader(
+        chapterStubs = chapterStubs,
+        chapter = activeChapter,
+        surfaceColors = surfaceColors,
+        preferences = preferences,
+        imageCache = imageCache,
+        chapterHighlights = chapterHighlights,
+        spokenIndexByBlock = spokenIndexByBlock,
+        ttsActiveBlockIndex = ttsActiveBlockIndex,
+        isAutoScrolling = isAutoScrolling,
+        autoScrollSpeed = autoScrollSpeed,
+        topOverlayClearanceDp = topOverlayClearanceDp,
+        activeSelection = activeSelection,
+        onSelectionChanged = { activeSelection = it },
+        onRequestImage = onRequestImage,
+        onToggleControls = onToggleControls,
+        onOpenFragmentTools = onOpenFragmentTools,
+        onCopyPlainText = onCopyPlainText,
+        onShareSelection = onShareSelection,
+        onSelectChapter = { nextIdx ->
+          activeSelection = null
+          onSelectChapter(nextIdx)
+        },
+        onVisibleBlockChanged = onVisibleBlockChanged,
+        modifier = modifier
+      )
+    }
   } else {
-    EpubPaginatedReader(
-      metadata = metadata,
-      chapterStubs = chapterStubs,
-      chapter = activeChapter,
-      initialSubPage = initialSubPage,
-      surfaceColors = surfaceColors,
-      preferences = preferences,
-      imageCache = imageCache,
-      chapterHighlights = chapterHighlights,
-      spokenIndexByBlock = spokenIndexByBlock,
-      ttsActiveBlockIndex = ttsActiveBlockIndex,
-      topOverlayClearanceDp = topOverlayClearanceDp,
-      activeSelection = activeSelection,
-      onSelectionChanged = { activeSelection = it },
-      onRequestImage = onRequestImage,
-      onToggleControls = onToggleControls,
-      onOpenFragmentTools = onOpenFragmentTools,
-      onCopyPlainText = onCopyPlainText,
-      onShareSelection = onShareSelection,
-      onPositionChanged = onPositionChanged,
-      onVisibleBlockChanged = onVisibleBlockChanged,
-      modifier = modifier
-    )
+    key(activeChapter.index) {
+      EpubPaginatedReader(
+        chapterStubs = chapterStubs,
+        chapter = activeChapter,
+        initialSubPage = initialSubPage,
+        pagesCache = pagesCache,
+        surfaceColors = surfaceColors,
+        preferences = preferences,
+        imageCache = imageCache,
+        chapterHighlights = chapterHighlights,
+        spokenIndexByBlock = spokenIndexByBlock,
+        ttsActiveBlockIndex = ttsActiveBlockIndex,
+        topOverlayClearanceDp = topOverlayClearanceDp,
+        activeSelection = activeSelection,
+        onSelectionChanged = { activeSelection = it },
+        onRequestImage = onRequestImage,
+        onToggleControls = onToggleControls,
+        onOpenFragmentTools = onOpenFragmentTools,
+        onCopyPlainText = onCopyPlainText,
+        onShareSelection = onShareSelection,
+        onPositionChanged = onPositionChanged,
+        onSelectChapter = { nextIdx ->
+          activeSelection = null
+          onSelectChapter(nextIdx)
+        },
+        onVisibleBlockChanged = onVisibleBlockChanged,
+        modifier = modifier
+      )
+    }
   }
 }
 
 @Composable
 private fun EpubPaginatedReader(
-  metadata: EpubMetadata,
   chapterStubs: List<EpubChapterStub>,
   chapter: EpubChapter,
   initialSubPage: Int,
+  pagesCache: EpubPagesCache<EpubRenderedPage>,
   surfaceColors: ReaderSurfaceColors,
   preferences: ReaderPreferences,
   imageCache: Map<String, Bitmap>,
@@ -647,6 +735,7 @@ private fun EpubPaginatedReader(
   onCopyPlainText: (String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPositionChanged: (chapterIndex: Int, subPage: Int, overallProgress: Float) -> Unit,
+  onSelectChapter: (chapterIndex: Int) -> Unit,
   onVisibleBlockChanged: (Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -720,28 +809,29 @@ private fun EpubPaginatedReader(
     val imageHeightPx = with(density) { 210.dp.roundToPx() }
     val quoteIndentPx = with(density) { 20.dp.roundToPx() }
 
-    val pages = remember(
-      chapter.index,
-      chapter.blocks,
-      availableWidthPx,
-      availableHeightPx,
-      preferences.fontSizeSp,
-      preferences.lineHeightMultiplier,
-      preferences.readerFont,
-      preferences.horizontalPaddingDp
-    ) {
-      paginateChapterBlocks(
-        blocks = chapter.blocks,
-        textMeasurer = textMeasurer,
-        bodyStyle = bodyStyle,
-        quoteStyle = quoteStyle,
-        maxWidthPx = availableWidthPx,
-        maxHeightPx = availableHeightPx,
-        quoteWidthPx = (availableWidthPx - quoteIndentPx).coerceAtLeast(120),
-        paragraphGapPx = paragraphGapPx,
-        imageHeightPx = imageHeightPx,
-        density = density
-      )
+    val layoutKey = EpubPaginationLayoutKey(
+      availableWidthPx = availableWidthPx,
+      availableHeightPx = availableHeightPx,
+      fontSizeSp = preferences.fontSizeSp,
+      lineHeightMultiplier = preferences.lineHeightMultiplier,
+      readerFont = preferences.readerFont,
+      horizontalPaddingDp = preferences.horizontalPaddingDp
+    )
+    val pages = remember(chapter.index, chapter.blocks, layoutKey) {
+      pagesCache.getOrCompute(chapter.index, layoutKey) {
+        paginateChapterBlocks(
+          blocks = chapter.blocks,
+          textMeasurer = textMeasurer,
+          bodyStyle = bodyStyle,
+          quoteStyle = quoteStyle,
+          maxWidthPx = availableWidthPx,
+          maxHeightPx = availableHeightPx,
+          quoteWidthPx = (availableWidthPx - quoteIndentPx).coerceAtLeast(120),
+          paragraphGapPx = paragraphGapPx,
+          imageHeightPx = imageHeightPx,
+          density = density
+        )
+      }
     }
 
     val safePageCount = pages.size.coerceAtLeast(1)
@@ -814,13 +904,13 @@ private fun EpubPaginatedReader(
         .windowInsetsPadding(contentInsets),
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
-      // Subtle editorial running header
+      // Subtle editorial running header (chapter title on left only)
       Row(
         modifier = Modifier
           .widthIn(max = 680.dp)
           .fillMaxWidth()
           .padding(horizontal = horizontalPad, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
       ) {
         Text(
@@ -829,13 +919,9 @@ private fun EpubPaginatedReader(
           color = surfaceColors.secondaryText,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f)
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-          text = "Cap. ${chapter.index + 1}/$totalChapters",
-          style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
-          color = surfaceColors.secondaryText
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("epub_header_chapter_title")
         )
       }
 
@@ -844,6 +930,51 @@ private fun EpubPaginatedReader(
           .weight(1f)
           .widthIn(max = 680.dp)
           .fillMaxWidth()
+          .pointerInput(chapter.index, safePageCount, totalChapters) {
+            val swipeThresholdPx = 56.dp.toPx()
+            awaitEachGesture {
+              val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+              if (latestSelection != null) return@awaitEachGesture
+              val startedOnFirstPage = pagerState.currentPage <= 0
+              val startedOnLastPage = pagerState.currentPage >= safePageCount - 1
+              if (!startedOnFirstPage && !startedOnLastPage) return@awaitEachGesture
+
+              val startPos = down.position
+              var multiTouch = false
+              var lastPos = startPos
+
+              while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } > 1) {
+                  multiTouch = true
+                }
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                lastPos = change.position
+                if (!change.pressed) break
+              }
+
+              if (multiTouch || latestSelection != null) return@awaitEachGesture
+              when (
+                resolveEpubBoundarySwipe(
+                  startedOnFirstPage = startedOnFirstPage,
+                  startedOnLastPage = startedOnLastPage,
+                  chapterIndex = chapter.index,
+                  totalChapters = totalChapters,
+                  dx = lastPos.x - startPos.x,
+                  dy = lastPos.y - startPos.y,
+                  swipeThresholdPx = swipeThresholdPx
+                )
+              ) {
+                EpubBoundaryAction.NEXT_CHAPTER -> {
+                  onSelectChapter(chapter.index + 1)
+                }
+                EpubBoundaryAction.PREVIOUS_CHAPTER -> {
+                  onSelectChapter(chapter.index - 1)
+                }
+                EpubBoundaryAction.NONE -> Unit
+              }
+            }
+          }
       ) {
         HorizontalPager(
           state = pagerState,
@@ -863,18 +994,14 @@ private fun EpubPaginatedReader(
                   if (pageIdx > 0) {
                     scope.launch { pagerState.animateScrollToPage(pageIdx - 1) }
                   } else if (chapter.index > 0) {
-                    val prevIdx = chapter.index - 1
-                    val prog = (prevIdx + 1).toFloat() / totalChapters
-                    onPositionChanged(prevIdx, 0, prog)
+                    onSelectChapter(chapter.index - 1)
                   }
                 }
                 xInPage > w * 0.78f -> {
                   if (pageIdx < safePageCount - 1) {
                     scope.launch { pagerState.animateScrollToPage(pageIdx + 1) }
                   } else if (chapter.index < totalChapters - 1) {
-                    val nextIdx = chapter.index + 1
-                    val prog = (nextIdx + 1).toFloat() / totalChapters
-                    onPositionChanged(nextIdx, 0, prog)
+                    onSelectChapter(chapter.index + 1)
                   }
                 }
                 else -> onToggleControls()
@@ -1063,74 +1190,25 @@ private fun EpubPaginatedReader(
                 }
               }
 
-              // Next chapter prompt on final page
-              if (pageIdx == safePageCount - 1 && chapter.index < totalChapters - 1) {
-                Spacer(Modifier.weight(1f))
-                HorizontalDivider(color = surfaceColors.divider)
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                      if (latestSelection != null) {
-                        latestOnSelectionChanged(null)
-                      } else {
-                        val nextIdx = chapter.index + 1
-                        val prog = (nextIdx + 1).toFloat() / totalChapters
-                        onPositionChanged(nextIdx, 0, prog)
-                      }
-                    }
-                    .padding(vertical = 8.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                      text = "SIGUIENTE CAPÍTULO",
-                      style = MaterialTheme.typography.labelSmall,
-                      color = surfaceColors.accent
-                    )
-                    Text(
-                      text = chapterStubs[chapter.index + 1].title,
-                      style = MaterialTheme.typography.titleSmall,
-                      color = surfaceColors.text,
-                      maxLines = 1,
-                      overflow = TextOverflow.Ellipsis
-                    )
-                  }
-                  Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "Ir al siguiente capítulo",
-                    tint = surfaceColors.accent
-                  )
-                }
-              }
             }
           }
         }
       }
 
-      // Subtle footer page counter
+      // Subtle footer page counter only
       Row(
         modifier = Modifier
           .widthIn(max = 680.dp)
           .fillMaxWidth()
           .padding(horizontal = horizontalPad, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
       ) {
         Text(
-          text = metadata.title,
-          style = MaterialTheme.typography.labelSmall,
-          color = surfaceColors.secondaryText,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f)
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
           text = "Pág. ${pagerState.currentPage + 1} de $safePageCount",
           style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
-          color = surfaceColors.secondaryText
+          color = surfaceColors.secondaryText,
+          modifier = Modifier.testTag("epub_footer_page_counter")
         )
       }
     }
@@ -1483,6 +1561,7 @@ private fun EpubScrollReader(
   val latestSelection by rememberUpdatedState(activeSelection)
   val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
   val latestOnToggleControls by rememberUpdatedState(onToggleControls)
+  val latestOnSelectChapter by rememberUpdatedState(onSelectChapter)
 
   Box(
     modifier = modifier
@@ -1504,11 +1583,55 @@ private fun EpubScrollReader(
               else latestOnToggleControls()
             }
           )
+        }
+        .pointerInput(chapter.index, totalChapters) {
+          val verticalSwipeThresholdPx = 52.dp.toPx()
+          awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (latestSelection != null) return@awaitEachGesture
+            val startedAtTop = !listState.canScrollBackward
+            val startedAtBottom = !listState.canScrollForward
+            if (!startedAtTop && !startedAtBottom) return@awaitEachGesture
+
+            val startPos = down.position
+            var multiTouch = false
+            var lastPos = startPos
+
+            while (true) {
+              val event = awaitPointerEvent(PointerEventPass.Initial)
+              if (event.changes.count { it.pressed } > 1) {
+                multiTouch = true
+              }
+              val change = event.changes.firstOrNull { it.id == down.id } ?: break
+              lastPos = change.position
+              if (!change.pressed) break
+            }
+
+            if (multiTouch || latestSelection != null) return@awaitEachGesture
+            when (
+              resolveEpubVerticalBoundaryScroll(
+                startedAtTop = startedAtTop,
+                startedAtBottom = startedAtBottom,
+                stillAtTop = !listState.canScrollBackward,
+                stillAtBottom = !listState.canScrollForward,
+                chapterIndex = chapter.index,
+                totalChapters = totalChapters,
+                dx = lastPos.x - startPos.x,
+                dy = lastPos.y - startPos.y,
+                swipeThresholdPx = verticalSwipeThresholdPx
+              )
+            ) {
+              EpubBoundaryAction.NEXT_CHAPTER -> latestOnSelectChapter(chapter.index + 1)
+              EpubBoundaryAction.PREVIOUS_CHAPTER -> latestOnSelectChapter(chapter.index - 1)
+              EpubBoundaryAction.NONE -> Unit
+            }
+          }
         },
       contentAlignment = Alignment.TopCenter
     ) {
       LazyColumn(
         state = listState,
+        userScrollEnabled = activeSelection == null,
         contentPadding = PaddingValues(
           horizontal = preferences.horizontalPaddingDp.dp,
           vertical = 24.dp
@@ -1699,35 +1822,6 @@ private fun EpubScrollReader(
               }
             }
           }
-        }
-
-        item {
-          Spacer(Modifier.height(16.dp))
-          HorizontalDivider(color = surfaceColors.divider)
-          Spacer(Modifier.height(16.dp))
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-          ) {
-            if (chapter.index > 0) {
-              OutlinedButton(onClick = { onSelectChapter(chapter.index - 1) }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Anterior")
-              }
-            } else {
-              Spacer(Modifier.width(1.dp))
-            }
-
-            if (chapter.index < totalChapters - 1) {
-              FilledTonalButton(onClick = { onSelectChapter(chapter.index + 1) }) {
-                Text("Siguiente capítulo")
-                Spacer(Modifier.width(6.dp))
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)
-              }
-            }
-          }
-          Spacer(Modifier.height(48.dp))
         }
       }
     }

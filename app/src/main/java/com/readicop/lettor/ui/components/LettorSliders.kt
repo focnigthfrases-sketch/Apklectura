@@ -1,6 +1,8 @@
 package com.readicop.lettor.ui.components
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -192,15 +194,19 @@ fun LettorThinSlider(
 fun LettorRulerBrightnessSlider(
   value: Float,
   onValueChange: (Float) -> Unit,
-  valueRange: ClosedFloatingPointRange<Float> = 0.05f..1.0f,
+  valueRange: ClosedFloatingPointRange<Float> = 0.01f..1.0f,
   isAuto: Boolean = false,
   accentColor: Color = MaterialTheme.colorScheme.primary,
   tickColor: Color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f),
   baselineColor: Color = MaterialTheme.colorScheme.outlineVariant,
   modifier: Modifier = Modifier
 ) {
+  var isDragging by remember { mutableStateOf(false) }
+  var localDragValue by remember { mutableStateOf(value) }
+  val effectiveValue = if (isDragging) localDragValue else value
+
   val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(1e-5f)
-  val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+  val fraction = ((effectiveValue - valueRange.start) / span).coerceIn(0f, 1f)
 
   val latestOnValueChange by rememberUpdatedState(onValueChange)
   val latestRange by rememberUpdatedState(valueRange)
@@ -213,7 +219,7 @@ fun LettorRulerBrightnessSlider(
       .height(48.dp)
       .semantics {
         progressBarRangeInfo = ProgressBarRangeInfo(
-          current = value.coerceIn(valueRange.start, valueRange.endInclusive),
+          current = effectiveValue.coerceIn(valueRange.start, valueRange.endInclusive),
           range = valueRange,
           steps = 0
         )
@@ -224,26 +230,51 @@ fun LettorRulerBrightnessSlider(
         }
       }
       .pointerInput(valueRange) {
-        detectTapGestures { offset ->
-          val usableW = (size.width - edgePadPx * 2f).coerceAtLeast(1f)
-          val f = (offset.x - edgePadPx) / usableW
-          latestOnValueChange(snapValueToRange(f, latestRange, 0))
-        }
-      }
-      .pointerInput(valueRange) {
-        detectHorizontalDragGestures(
-          onDragStart = { offset ->
+        val touchSlop = viewConfiguration.touchSlop
+        awaitEachGesture {
+          val down = awaitFirstDown(requireUnconsumed = false)
+          val startPos = down.position
+          var horizontalDragStarted = false
+          var verticalScrollDetected = false
+
+          fun emitAtX(x: Float) {
             val usableW = (size.width - edgePadPx * 2f).coerceAtLeast(1f)
-            val f = (offset.x - edgePadPx) / usableW
-            latestOnValueChange(snapValueToRange(f, latestRange, 0))
-          },
-          onHorizontalDrag = { change, _ ->
-            change.consume()
-            val usableW = (size.width - edgePadPx * 2f).coerceAtLeast(1f)
-            val f = (change.position.x - edgePadPx) / usableW
-            latestOnValueChange(snapValueToRange(f, latestRange, 0))
+            val f = (x - edgePadPx) / usableW
+            val next = snapValueToRange(f, latestRange, 0)
+            localDragValue = next
+            latestOnValueChange(next)
           }
-        )
+
+          while (true) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) {
+              if (!horizontalDragStarted && !verticalScrollDetected && !change.isConsumed) {
+                emitAtX(change.position.x)
+              }
+              isDragging = false
+              break
+            }
+            val dx = change.position.x - startPos.x
+            val dy = change.position.y - startPos.y
+            if (!horizontalDragStarted && !verticalScrollDetected) {
+              if (abs(dx) > touchSlop && abs(dx) >= abs(dy)) {
+                horizontalDragStarted = true
+                isDragging = true
+                change.consume()
+                emitAtX(change.position.x)
+              } else if (abs(dy) > touchSlop && abs(dy) > abs(dx)) {
+                verticalScrollDetected = true
+                isDragging = false
+                break
+              }
+            } else if (horizontalDragStarted) {
+              change.consume()
+              emitAtX(change.position.x)
+            }
+          }
+          isDragging = false
+        }
       }
   ) {
     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -254,7 +285,7 @@ fun LettorRulerBrightnessSlider(
 
       val baselineY = size.height * 0.78f
       val currentX = startX + usableW * fraction
-      val indicatorAlpha = if (isAuto) 0.55f else 1f
+      val indicatorAlpha = if (isAuto && !isDragging) 0.55f else 1f
       val activeAccent = accentColor.copy(alpha = indicatorAlpha)
 
       // Horizontal ruler baseline bar

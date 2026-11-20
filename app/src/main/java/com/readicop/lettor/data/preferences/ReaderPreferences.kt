@@ -45,6 +45,14 @@ enum class OrientationLockMode(val label: String) {
   LANDSCAPE("Horizontal")
 }
 
+const val MIN_READER_FONT_SIZE_SP = 8f
+const val MAX_READER_FONT_SIZE_SP = 28f
+const val MIN_READER_BRIGHTNESS = 0.01f
+const val MAX_READER_BRIGHTNESS = 1.0f
+
+fun normalizeReaderBrightness(brightness: Float): Float =
+  if (brightness < 0f) -1f else brightness.coerceIn(MIN_READER_BRIGHTNESS, MAX_READER_BRIGHTNESS)
+
 data class ReaderPreferences(
   val appThemeMode: AppThemeMode = AppThemeMode.SYSTEM,
   val readerTheme: ReaderTheme = ReaderTheme.PAPER,
@@ -135,7 +143,7 @@ class ReaderPreferencesRepository(private val context: Context) {
         ?: ReaderTheme.PAPER,
       readerFont = prefs[Keys.READER_FONT]?.let { runCatching { ReaderFont.valueOf(it) }.getOrNull() }
         ?: ReaderFont.LITERATA,
-      fontSizeSp = (prefs[Keys.FONT_SIZE_SP] ?: 18f).coerceIn(14f, 28f),
+      fontSizeSp = (prefs[Keys.FONT_SIZE_SP] ?: 18f).coerceIn(MIN_READER_FONT_SIZE_SP, MAX_READER_FONT_SIZE_SP),
       lineHeightMultiplier = (prefs[Keys.LINE_HEIGHT_MULTIPLIER] ?: 1.55f).coerceIn(1.25f, 2.0f),
       horizontalPaddingDp = (prefs[Keys.HORIZONTAL_PADDING_DP] ?: 22).coerceIn(12, 36),
       epubScrollMode = prefs[Keys.EPUB_SCROLL_MODE] ?: false,
@@ -145,7 +153,7 @@ class ReaderPreferencesRepository(private val context: Context) {
       samplesSeeded = prefs[Keys.SAMPLES_SEEDED] ?: false,
       orientationLock = prefs[Keys.ORIENTATION_LOCK]?.let { runCatching { OrientationLockMode.valueOf(it) }.getOrNull() }
         ?: OrientationLockMode.AUTO,
-      readerBrightness = prefs[Keys.READER_BRIGHTNESS] ?: -1f,
+      readerBrightness = prefs[Keys.READER_BRIGHTNESS]?.let(::normalizeReaderBrightness) ?: -1f,
       ttsSpeechRate = (prefs[Keys.TTS_SPEECH_RATE] ?: 1.0f).coerceIn(0.6f, 2.0f),
       autoScrollSpeed = (prefs[Keys.AUTO_SCROLL_SPEED] ?: 1.2f).coerceIn(0.5f, 3.0f),
       dailyGoalMinutes = (prefs[Keys.DAILY_GOAL_MINUTES] ?: 20).coerceIn(5, 180),
@@ -180,7 +188,9 @@ class ReaderPreferencesRepository(private val context: Context) {
   }
 
   suspend fun setFontSizeSp(size: Float) {
-    context.dataStore.edit { it[Keys.FONT_SIZE_SP] = size.coerceIn(14f, 28f) }
+    context.dataStore.edit {
+      it[Keys.FONT_SIZE_SP] = size.coerceIn(MIN_READER_FONT_SIZE_SP, MAX_READER_FONT_SIZE_SP)
+    }
   }
 
   suspend fun setLineHeightMultiplier(multiplier: Float) {
@@ -216,7 +226,7 @@ class ReaderPreferencesRepository(private val context: Context) {
   }
 
   suspend fun setReaderBrightness(brightness: Float) {
-    context.dataStore.edit { it[Keys.READER_BRIGHTNESS] = brightness }
+    context.dataStore.edit { it[Keys.READER_BRIGHTNESS] = normalizeReaderBrightness(brightness) }
   }
 
   suspend fun setTtsSpeechRate(rate: Float) {

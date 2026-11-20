@@ -54,6 +54,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +72,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -78,9 +80,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import com.readicop.lettor.data.local.BookFormat
 import com.readicop.lettor.data.local.BookmarkEntity
 import com.readicop.lettor.data.local.HighlightEntity
+import com.readicop.lettor.data.preferences.MAX_READER_BRIGHTNESS
+import com.readicop.lettor.data.preferences.MAX_READER_FONT_SIZE_SP
+import com.readicop.lettor.data.preferences.MIN_READER_BRIGHTNESS
+import com.readicop.lettor.data.preferences.MIN_READER_FONT_SIZE_SP
 import com.readicop.lettor.data.preferences.OrientationLockMode
 import com.readicop.lettor.data.preferences.ReaderFont
 import com.readicop.lettor.data.preferences.ReaderPreferences
@@ -361,6 +368,28 @@ fun ReaderAppearanceSheet(
     containerColor = MaterialTheme.colorScheme.surface,
     contentColor = MaterialTheme.colorScheme.onSurface
   ) {
+    val sheetView = LocalView.current
+    val dialogWindow = remember(sheetView) {
+      var parent = sheetView.parent
+      var resolvedWindow: android.view.Window? = null
+      while (parent != null) {
+        if (parent is DialogWindowProvider) {
+          resolvedWindow = parent.window
+          break
+        }
+        parent = parent.parent
+      }
+      resolvedWindow
+    }
+    LaunchedEffect(dialogWindow, preferences.readerBrightness) {
+      val win = dialogWindow ?: return@LaunchedEffect
+      val lp = win.attributes
+      val target = resolveWindowBrightness(preferences.readerBrightness)
+      if (lp.screenBrightness != target) {
+        lp.screenBrightness = target
+        win.attributes = lp
+      }
+    }
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -464,16 +493,16 @@ fun ReaderAppearanceSheet(
           LettorThinSlider(
             value = preferences.fontSizeSp,
             onValueChange = onFontSizeChange,
-            valueRange = 14f..28f,
-            steps = 13,
+            valueRange = MIN_READER_FONT_SIZE_SP..MAX_READER_FONT_SIZE_SP,
+            steps = (MAX_READER_FONT_SIZE_SP - MIN_READER_FONT_SIZE_SP).roundToInt() - 1,
             modifier = Modifier.testTag("reader_font_size_slider")
           )
         }
       }
 
-      // 2. Tarjeta Luz (brillo con regla + orientación)
+      // 2. Tarjeta Brillo (brillo con regla + orientación)
       AppearanceSectionCard(
-        title = "Luz",
+        title = "Brillo",
         icon = AppearanceCanvasIcon.LIGHT,
         trailingBadge = if (preferences.readerBrightness < 0f) "Auto" else "${(preferences.readerBrightness * 100f).roundToInt()}%",
         cardTag = "appearance_card_light"
@@ -499,8 +528,8 @@ fun ReaderAppearanceSheet(
           )
           LettorRulerBrightnessSlider(
             value = if (preferences.readerBrightness < 0f) 0.5f else preferences.readerBrightness,
-            onValueChange = { onBrightnessChange(it.coerceIn(0.05f, 1.0f)) },
-            valueRange = 0.05f..1.0f,
+            onValueChange = { onBrightnessChange(it.coerceIn(MIN_READER_BRIGHTNESS, MAX_READER_BRIGHTNESS)) },
+            valueRange = MIN_READER_BRIGHTNESS..MAX_READER_BRIGHTNESS,
             isAuto = preferences.readerBrightness < 0f,
             modifier = Modifier
               .weight(1f)

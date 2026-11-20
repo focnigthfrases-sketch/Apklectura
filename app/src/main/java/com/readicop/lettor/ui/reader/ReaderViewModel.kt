@@ -10,11 +10,14 @@ import com.readicop.lettor.data.local.BookFormat
 import com.readicop.lettor.data.local.BookmarkEntity
 import com.readicop.lettor.data.local.HighlightColor
 import com.readicop.lettor.data.local.HighlightEntity
+import com.readicop.lettor.data.preferences.MAX_READER_FONT_SIZE_SP
+import com.readicop.lettor.data.preferences.MIN_READER_FONT_SIZE_SP
 import com.readicop.lettor.data.preferences.OrientationLockMode
 import com.readicop.lettor.data.preferences.ReaderFont
 import com.readicop.lettor.data.preferences.ReaderPreferences
 import com.readicop.lettor.data.preferences.ReaderPreferencesRepository
 import com.readicop.lettor.data.preferences.ReaderTheme
+import com.readicop.lettor.data.preferences.normalizeReaderBrightness
 import com.readicop.lettor.data.repository.LibraryRepository
 import com.readicop.lettor.domain.engine.BookQuestionAnswer
 import com.readicop.lettor.domain.engine.ChapterSummaryResult
@@ -37,8 +40,11 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -101,11 +107,25 @@ class ReaderViewModel(
   private val autoScrollingFlow = MutableStateFlow(false)
   private val sleepRemainingFlow = MutableStateFlow(0)
   private val sleepExpiredFlow = MutableStateFlow(false)
+  private val liveBrightnessOverrideFlow = MutableStateFlow<Float?>(null)
+  private val liveFontSizeOverrideFlow = MutableStateFlow<Float?>(null)
+  private val pendingBrightnessPersistFlow = MutableSharedFlow<Float>(
+    replay = 0,
+    extraBufferCapacity = 1,
+    onBufferOverflow = BufferOverflow.DROP_OLDEST
+  )
+  private val pendingFontSizePersistFlow = MutableSharedFlow<Float>(
+    replay = 0,
+    extraBufferCapacity = 1,
+    onBufferOverflow = BufferOverflow.DROP_OLDEST
+  )
 
   private var epubSession: LazyEpubSession? = null
   private var pdfSession: PdfBookSession? = null
   private var readingTimerJob: Job? = null
   private var sleepTimerJob: Job? = null
+  private var chapterSwitchJob: Job? = null
+  private val chapterSubOffsets = mutableMapOf<Int, Int>()
 
   private val ttsController: TtsReaderController = TtsReaderController(appContext) {
     // Advance to next chapter automatically when TTS finishes a chapter
@@ -114,7 +134,7 @@ class ReaderViewModel(
       if (content is ReaderContentState.EpubReady) {
         val nextIdx = currentUnitFlow.value + 1
         if (nextIdx < content.chapterStubs.size) {
-          jumpToUnit(nextIdx)
+          jumpToUnitInternal(nextIdx, resetSubOffset = true)
           delay(250)
           toggleTtsPlayPause(0)
         }
@@ -143,12 +163,23 @@ class ReaderViewModel(
     val sleepExpiredDialog: Boolean
   )
 
+  private val effectivePreferencesFlow = combine(
+    preferencesRepository.preferencesFlow,
+    liveBrightnessOverrideFlow,
+    liveFontSizeOverrideFlow
+  ) { prefs, brightnessOverride, fontSizeOverride ->
+    prefs.copy(
+      readerBrightness = brightnessOverride ?: prefs.readerBrightness,
+      fontSizeSp = fontSizeOverride ?: prefs.fontSizeSp
+    )
+  }
+
   val uiState: StateFlow<ReaderUiState> = combine(
     repository.observeBook(bookId),
     contentStateFlow,
     combine(currentUnitFlow, currentSubOffsetFlow) { u, s -> u to s },
     combine(repository.observeBookmarksForBook(bookId), repository.observeHighlightsForBook(bookId)) { bm, hl -> bm to hl },
-    combine(preferencesRepository.preferencesFlow, extraStateFlow) { prefs, extra -> prefs to extra }
+    combine(effectivePreferencesFlow, extraStateFlow) { prefs, extra -> prefs to extra }
   ) { book, content, position, annotations, prefExtra ->
     val (prefs, extra) = prefExtra
     ReaderUiState(
@@ -185,6 +216,20 @@ class ReaderViewModel(
     loadBook()
     startReadingTimer()
     viewModelScope.launch {
+      pendingBrightnessPersistFlow.collect { brightness ->
+        withContext(NonCancellable) {
+          preferencesRepository.setReaderBrightness(brightness)
+        }
+      }
+    }
+    viewModelScope.launch {
+      pendingFontSizePersistFlow.collect { sizeSp ->
+        withContext(NonCancellable) {
+          preferencesRepository.setFontSizeSp(sizeSp)
+        }
+      }
+    }
+    viewModelScope.launch {
       preferencesRepository.setActiveReadingBookId(bookId)
       preferencesRepository.markHasOpenedAnyBook()
     }
@@ -216,15 +261,19 @@ class ReaderViewModel(
             val session = withContext(Dispatchers.IO) { LazyEpubSession(file).open() }
             epubSession = session
             val safeUnit = startUnit.coerceIn(0, (session.chapterStubs.size - 1).coerceAtLeast(0))
+            val safeSub = startSub.coerceAtLeast(0)
+            chapterSubOffsets.clear()
+            chapterSubOffsets[safeUnit] = safeSub
             val activeChapter = withContext(Dispatchers.IO) { session.getChapter(safeUnit) }
             currentUnitFlow.value = safeUnit
+            currentSubOffsetFlow.value = safeSub
             contentStateFlow.value = ReaderContentState.EpubReady(
               metadata = session.metadata,
               chapterStubs = session.chapterStubs,
               activeChapter = activeChapter
             )
             loadChapterIntoTts(activeChapter)
-            saveProgressInternal(book, safeUnit, startSub, session.chapterStubs.size)
+            saveProgressInternal(book, safeUnit, safeSub, session.chapterStubs.size)
           }
           BookFormat.PDF -> {
             val session = PdfBookSession(file, appContext)
@@ -250,19 +299,38 @@ class ReaderViewModel(
     }
   }
 
-  fun jumpToUnit(targetUnit: Int) {
+  internal fun rememberedSubOffsetForChapter(chapterIndex: Int): Int =
+    chapterSubOffsets[chapterIndex]?.coerceAtLeast(0) ?: 0
+
+  fun jumpToUnit(targetUnit: Int) = jumpToUnitInternal(targetUnit, resetSubOffset = false)
+
+  private fun jumpToUnitInternal(targetUnit: Int, resetSubOffset: Boolean) {
     val content = contentStateFlow.value
     when (content) {
       is ReaderContentState.EpubReady -> {
         val safeIdx = targetUnit.coerceIn(0, (content.chapterStubs.size - 1).coerceAtLeast(0))
-        viewModelScope.launch {
+        chapterSwitchJob?.cancel()
+        chapterSwitchJob = viewModelScope.launch {
           val chapter = withContext(Dispatchers.IO) {
             epubSession?.getChapter(safeIdx)
           } ?: return@launch
-          contentStateFlow.value = content.copy(activeChapter = chapter)
+          val restoredSub = if (resetSubOffset) 0 else (chapterSubOffsets[safeIdx] ?: 0).coerceAtLeast(0)
+          chapterSubOffsets[safeIdx] = restoredSub
+          currentUnitFlow.value = safeIdx
+          currentSubOffsetFlow.value = restoredSub
+          val latestContent = contentStateFlow.value as? ReaderContentState.EpubReady ?: content
+          contentStateFlow.value = latestContent.copy(activeChapter = chapter)
           loadChapterIntoTts(chapter)
-          val prog = (safeIdx + 1).toFloat() / content.chapterStubs.size.coerceAtLeast(1)
-          onPositionChanged(safeIdx, 0, prog)
+          val totalUnits = latestContent.chapterStubs.size.coerceAtLeast(1)
+          val prog = ((safeIdx + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
+          val book = uiState.value.book ?: return@launch
+          repository.updateProgress(
+            bookId = book.id,
+            unit = safeIdx,
+            subOffset = restoredSub,
+            progress = prog,
+            isFinished = safeIdx >= totalUnits - 1 && prog >= 0.96f
+          )
         }
       }
       is ReaderContentState.PdfReady -> {
@@ -283,19 +351,15 @@ class ReaderViewModel(
     }.coerceAtLeast(1)
 
     val safeUnit = unitIndex.coerceIn(0, totalUnits - 1)
-    val unitChanged = safeUnit != currentUnitFlow.value
-    currentUnitFlow.value = safeUnit
-    currentSubOffsetFlow.value = subOffset.coerceAtLeast(0)
-
-    if (unitChanged && content is ReaderContentState.EpubReady && content.activeChapter.index != safeUnit) {
-      viewModelScope.launch {
-        val chapter = withContext(Dispatchers.IO) { epubSession?.getChapter(safeUnit) }
-        if (chapter != null) {
-          contentStateFlow.value = content.copy(activeChapter = chapter)
-          loadChapterIntoTts(chapter)
-        }
-      }
+    if (content is ReaderContentState.EpubReady && content.activeChapter.index != safeUnit) {
+      jumpToUnit(safeUnit)
+      return
     }
+
+    val safeSub = subOffset.coerceAtLeast(0)
+    chapterSubOffsets[safeUnit] = safeSub
+    currentUnitFlow.value = safeUnit
+    currentSubOffsetFlow.value = safeSub
 
     val overallProgress = unitProgressFraction ?: ((safeUnit + 1).toFloat() / totalUnits.toFloat())
     val book = uiState.value.book ?: return
@@ -303,7 +367,7 @@ class ReaderViewModel(
       repository.updateProgress(
         bookId = book.id,
         unit = safeUnit,
-        subOffset = subOffset.coerceAtLeast(0),
+        subOffset = safeSub,
         progress = overallProgress.coerceIn(0f, 1f),
         isFinished = safeUnit >= totalUnits - 1 && overallProgress >= 0.96f
       )
@@ -559,13 +623,21 @@ class ReaderViewModel(
 
   fun setReaderTheme(theme: ReaderTheme) = viewModelScope.launch { preferencesRepository.setReaderTheme(theme) }
   fun setReaderFont(font: ReaderFont) = viewModelScope.launch { preferencesRepository.setReaderFont(font) }
-  fun setFontSizeSp(size: Float) = viewModelScope.launch { preferencesRepository.setFontSizeSp(size) }
+  fun setFontSizeSp(size: Float) {
+    val normalized = size.coerceIn(MIN_READER_FONT_SIZE_SP, MAX_READER_FONT_SIZE_SP)
+    liveFontSizeOverrideFlow.value = normalized
+    pendingFontSizePersistFlow.tryEmit(normalized)
+  }
   fun setLineHeightMultiplier(mult: Float) = viewModelScope.launch { preferencesRepository.setLineHeightMultiplier(mult) }
   fun setHorizontalPaddingDp(paddingDp: Int) = viewModelScope.launch { preferencesRepository.setHorizontalPaddingDp(paddingDp) }
   fun setEpubScrollMode(scroll: Boolean) = viewModelScope.launch { preferencesRepository.setEpubScrollMode(scroll) }
   fun setPdfScrollMode(scroll: Boolean) = viewModelScope.launch { preferencesRepository.setPdfScrollMode(scroll) }
   fun setPdfNightFilter(enabled: Boolean) = viewModelScope.launch { preferencesRepository.setPdfNightFilter(enabled) }
-  fun setReaderBrightness(brightness: Float) = viewModelScope.launch { preferencesRepository.setReaderBrightness(brightness) }
+  fun setReaderBrightness(brightness: Float) {
+    val normalized = normalizeReaderBrightness(brightness)
+    liveBrightnessOverrideFlow.value = normalized
+    pendingBrightnessPersistFlow.tryEmit(normalized)
+  }
   fun setOrientationLock(mode: OrientationLockMode) = viewModelScope.launch { preferencesRepository.setOrientationLock(mode) }
 
   fun onReaderResumed() {
