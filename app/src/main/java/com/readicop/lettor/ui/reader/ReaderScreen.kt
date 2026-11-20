@@ -394,6 +394,7 @@ fun ReaderScreen(
           chapterStubs = content.chapterStubs,
           activeChapter = content.activeChapter,
           initialSubPage = uiState.currentSubOffset,
+          initialVerticalPosition = uiState.verticalChapterPositions[epubChapterUniqueId(content.activeChapter)],
           preferences = uiState.preferences,
           surfaceColors = surfaceColors,
           imageCache = imageCache,
@@ -420,6 +421,7 @@ fun ReaderScreen(
           onPositionChanged = { chIdx, subPage, overall ->
             viewModel.onPositionChanged(chIdx, subPage, overall)
           },
+          onVerticalPositionChanged = viewModel::onVerticalPositionChanged,
           onSelectChapter = viewModel::jumpToUnit,
           onVisibleBlockChanged = { blockIdx ->
             currentVisibleBlockIndex = blockIdx

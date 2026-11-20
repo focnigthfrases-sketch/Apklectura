@@ -1078,4 +1078,301 @@ class ExampleRobolectricTest {
       tempEpub.delete()
     }
   }
+
+  @Test
+  fun `vertical epub cover detector matches cover-only chapters and ignores prose pages`() {
+    val meta = com.readicop.lettor.domain.engine.EpubMetadata(
+      title = "Don Quijote",
+      author = "Cervantes",
+      genre = "Clásicos",
+      description = "",
+      chapterCount = 4,
+      coverZipPath = "images/cover.jpg"
+    )
+    val coverBlock = com.readicop.lettor.domain.engine.EpubBlock.Image(
+      zipEntryPath = "images/cover.jpg",
+      alt = "Portada"
+    )
+    val coverChapter = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 0,
+      title = "Portada",
+      zipPath = "text/cover.xhtml",
+      blocks = listOf(
+        coverBlock,
+        com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+          androidx.compose.ui.text.AnnotatedString("\u00A0"),
+          "\u00A0"
+        )
+      ),
+      plainText = ""
+    )
+    assertEquals(
+      coverBlock,
+      com.readicop.lettor.ui.reader.findVerticalEpubCoverImageBlock(coverChapter, meta)
+    )
+
+    val textWithImageChapter = coverChapter.copy(
+      index = 2,
+      title = "Capítulo II",
+      zipPath = "text/ch2.xhtml",
+      blocks = listOf(
+        com.readicop.lettor.domain.engine.EpubBlock.Image("images/ill1.png"),
+        com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+          androidx.compose.ui.text.AnnotatedString("En un lugar de la Mancha."),
+          "En un lugar de la Mancha."
+        )
+      ),
+      plainText = "En un lugar de la Mancha."
+    )
+    assertEquals(
+      null,
+      com.readicop.lettor.ui.reader.findVerticalEpubCoverImageBlock(textWithImageChapter, meta)
+    )
+  }
+
+  @Test
+  fun `vertical epub cover sizing preserves original aspect ratio and fits inside screen bounds`() {
+    // Portrait 2:3 cover (2000x3000) inside portrait phone (340dp x 720dp)
+    val (wPortrait, hPortrait) = com.readicop.lettor.ui.reader.computeFittedCoverDimensions(
+      imageWidthPx = 2000,
+      imageHeightPx = 3000,
+      maxWidthDp = 340f,
+      maxHeightDp = 720f
+    )
+    assertEquals(340f, wPortrait, 0.01f)
+    assertEquals(510f, hPortrait, 0.01f)
+    assertEquals(2f / 3f, wPortrait / hPortrait, 0.001f)
+
+    // Large portrait cover inside short landscape viewport (680dp x 280dp): height-constrained, zero clipping
+    val (wLandscape, hLandscape) = com.readicop.lettor.ui.reader.computeFittedCoverDimensions(
+      imageWidthPx = 2400,
+      imageHeightPx = 3600,
+      maxWidthDp = 680f,
+      maxHeightDp = 280f
+    )
+    assertTrue(wLandscape <= 680f)
+    assertEquals(280f, hLandscape, 0.01f)
+    assertEquals(2f / 3f, wLandscape / hLandscape, 0.001f)
+
+    // Wide landscape cover (1600x1000) inside portrait viewport (360dp x 700dp)
+    val (wWide, hWide) = com.readicop.lettor.ui.reader.computeFittedCoverDimensions(
+      imageWidthPx = 1600,
+      imageHeightPx = 1000,
+      maxWidthDp = 360f,
+      maxHeightDp = 700f
+    )
+    assertEquals(360f, wWide, 0.01f)
+    assertEquals(225f, hWide, 0.01f)
+    assertEquals(1.6f, wWide / hWide, 0.001f)
+  }
+
+  @Test
+  fun `vertical epub scroll restore helper returns exact offset on same layout and adapts across font changes`() {
+    val layout16 = com.readicop.lettor.ui.reader.EpubVerticalLayoutSignature(
+      fontSizeSp = 16f,
+      lineHeightMultiplier = 1.45f,
+      readerFont = com.readicop.lettor.data.preferences.ReaderFont.LITERATA,
+      horizontalPaddingDp = 22
+    )
+    val layout24 = layout16.copy(fontSizeSp = 24f)
+    val saved = com.readicop.lettor.ui.reader.EpubVerticalScrollPosition(
+      chapterId = "OEBPS/ch1.xhtml",
+      chapterIndex = 0,
+      blockIndex = 12,
+      scrollOffsetPx = 185,
+      blockScrollFraction = 0.50f,
+      characterOffsetInBlock = 240,
+      layoutSignature = layout16
+    )
+
+    // Same layout: exact pixel offset restored
+    assertEquals(
+      12 to 185,
+      com.readicop.lettor.ui.reader.resolveVerticalScrollRestoreTarget(
+        saved = saved,
+        blockCount = 25,
+        currentLayout = layout16
+      )
+    )
+
+    // Font size changed & new character line top available: snaps to exact text line top
+    assertEquals(
+      12 to 312,
+      com.readicop.lettor.ui.reader.resolveVerticalScrollRestoreTarget(
+        saved = saved,
+        blockCount = 25,
+        currentLayout = layout24,
+        newItemHeightPx = 640,
+        newLineTopPx = 312
+      )
+    )
+
+    // Font size changed without TextLayoutResult: falls back to proportional block offset
+    assertEquals(
+      12 to 300,
+      com.readicop.lettor.ui.reader.resolveVerticalScrollRestoreTarget(
+        saved = saved,
+        blockCount = 25,
+        currentLayout = layout24,
+        newItemHeightPx = 600,
+        newLineTopPx = null
+      )
+    )
+  }
+
+  @Test
+  fun `reader view model remembers and restores exact vertical epub scroll position per unique chapter id`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempEpub = copySampleEpub(context)
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      val prefsRepo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+      kotlinx.coroutines.runBlocking {
+        prefsRepo.setEpubScrollMode(true)
+      }
+      val repo = com.readicop.lettor.data.repository.LibraryRepository(
+        appContext = context,
+        bookDao = db.bookDao(),
+        bookmarkDao = db.bookmarkDao(),
+        highlightDao = db.highlightDao(),
+        vocabularyDao = db.vocabularyDao(),
+        importer = com.readicop.lettor.domain.engine.BookImporter(context),
+        backupManager = com.readicop.lettor.domain.engine.BackupManager(
+          context = context,
+          bookDao = db.bookDao(),
+          bookmarkDao = db.bookmarkDao(),
+          highlightDao = db.highlightDao(),
+          vocabularyDao = db.vocabularyDao()
+        ),
+        preferencesRepository = prefsRepo
+      )
+
+      val bookId = kotlinx.coroutines.runBlocking {
+        db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Don Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = tempEpub.absolutePath,
+            totalUnits = 4,
+            currentUnit = 0,
+            currentSubOffset = 0
+          )
+        )
+      }
+
+      runCatching {
+        androidx.work.WorkManager.initialize(
+          context,
+          androidx.work.Configuration.Builder().build()
+        )
+      }
+
+      val vm = com.readicop.lettor.ui.reader.ReaderViewModel(
+        appContext = context,
+        bookId = bookId,
+        initialUnit = -1,
+        repository = repo,
+        preferencesRepository = prefsRepo
+      )
+
+      var latestState = vm.uiState.value
+      val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+        vm.uiState.collect { latestState = it }
+      }
+
+      fun awaitState(
+        timeoutMs: Long = 5000L,
+        predicate: (com.readicop.lettor.ui.reader.ReaderUiState) -> Boolean
+      ): com.readicop.lettor.ui.reader.ReaderUiState {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+          org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+          val current = vm.uiState.value
+          latestState = current
+          if (predicate(current)) return current
+          Thread.sleep(15L)
+        }
+        throw AssertionError("Timed out waiting for ReaderUiState; last=$latestState")
+      }
+
+      try {
+        val loaded = awaitState {
+          it.contentState is com.readicop.lettor.ui.reader.ReaderContentState.EpubReady &&
+            it.preferences.epubScrollMode
+        }
+        val ch0 = (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter
+        val ch0Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(ch0)
+        val layout16 = com.readicop.lettor.ui.reader.EpubVerticalLayoutSignature(
+          fontSizeSp = loaded.preferences.fontSizeSp,
+          lineHeightMultiplier = loaded.preferences.lineHeightMultiplier,
+          readerFont = loaded.preferences.readerFont,
+          horizontalPaddingDp = loaded.preferences.horizontalPaddingDp
+        )
+
+        val ch0Pos = com.readicop.lettor.ui.reader.EpubVerticalScrollPosition(
+          chapterId = ch0Id,
+          chapterIndex = 0,
+          blockIndex = 6,
+          scrollOffsetPx = 240,
+          blockScrollFraction = 0.6f,
+          characterOffsetInBlock = 150,
+          layoutSignature = layout16
+        )
+        vm.onVerticalPositionChanged(ch0, ch0Pos, 0.25f)
+
+        // Advance to Chapter 2 (index 1) and scroll to its own position
+        vm.jumpToUnit(1)
+        val atCh1 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1
+        }
+        val ch1 = (atCh1.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter
+        val ch1Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(ch1)
+        assertEquals(null, atCh1.verticalChapterPositions[ch1Id])
+
+        val ch1Pos = com.readicop.lettor.ui.reader.EpubVerticalScrollPosition(
+          chapterId = ch1Id,
+          chapterIndex = 1,
+          blockIndex = 3,
+          scrollOffsetPx = 95,
+          blockScrollFraction = 0.25f,
+          characterOffsetInBlock = 70,
+          layoutSignature = layout16
+        )
+        vm.onVerticalPositionChanged(ch1, ch1Pos, 0.5f)
+
+        // Return to Chapter 1: exact vertical position (unique chapter ID, block 6, 240px, char 150) is restored
+        vm.jumpToUnit(0)
+        val backAtCh0 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 0
+        }
+        val restoredCh0 = requireNotNull(backAtCh0.verticalChapterPositions[ch0Id])
+        assertEquals(6, restoredCh0.blockIndex)
+        assertEquals(240, restoredCh0.scrollOffsetPx)
+        assertEquals(150, restoredCh0.characterOffsetInBlock)
+
+        // Advance again to Chapter 2: its exact saved vertical position is preserved too
+        vm.jumpToUnit(1)
+        val backAtCh1 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1
+        }
+        val restoredCh1 = requireNotNull(backAtCh1.verticalChapterPositions[ch1Id])
+        assertEquals(3, restoredCh1.blockIndex)
+        assertEquals(95, restoredCh1.scrollOffsetPx)
+      } finally {
+        collectJob.cancel()
+        vm.onReaderStopped()
+      }
+    } finally {
+      db.close()
+      tempEpub.delete()
+    }
+  }
 }
