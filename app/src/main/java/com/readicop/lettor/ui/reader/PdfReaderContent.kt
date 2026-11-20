@@ -176,6 +176,119 @@ private fun findNearestPdfWordIndex(
   return bestIdx
 }
 
+private data class PdfVisualLine(
+  val startIdx: Int,
+  val endIdx: Int,
+  val left: Float,
+  val right: Float,
+  val centerY: Float,
+  val height: Float
+)
+
+fun expandPdfParagraphRange(
+  words: List<PdfGlyphWord>,
+  startWord: Int,
+  endWord: Int
+): IntRange? {
+  if (words.isEmpty()) return null
+
+  val lines = mutableListOf<PdfVisualLine>()
+  var lineStart = 0
+  var lineLeft = words[0].rect.left
+  var lineRight = words[0].rect.right
+  var sumCenterY = words[0].rect.centerY
+  var sumHeight = words[0].rect.height
+  var lineCount = 1
+
+  for (i in 1 until words.size) {
+    val w = words[i]
+    val prev = words[i - 1]
+    val avgY = sumCenterY / lineCount.toFloat()
+    val avgH = (sumHeight / lineCount.toFloat()).coerceAtLeast(0.006f)
+    val sameLine = abs(w.rect.centerY - avgY) <= maxOf(avgH * 0.65f, 0.005f) &&
+      w.rect.left >= prev.rect.left - maxOf(avgH * 2.5f, 0.03f)
+
+    if (sameLine) {
+      lineLeft = minOf(lineLeft, w.rect.left)
+      lineRight = maxOf(lineRight, w.rect.right)
+      sumCenterY += w.rect.centerY
+      sumHeight += w.rect.height
+      lineCount++
+    } else {
+      lines.add(
+        PdfVisualLine(
+          startIdx = lineStart,
+          endIdx = i - 1,
+          left = lineLeft,
+          right = lineRight,
+          centerY = avgY,
+          height = avgH
+        )
+      )
+      lineStart = i
+      lineLeft = w.rect.left
+      lineRight = w.rect.right
+      sumCenterY = w.rect.centerY
+      sumHeight = w.rect.height
+      lineCount = 1
+    }
+  }
+  lines.add(
+    PdfVisualLine(
+      startIdx = lineStart,
+      endIdx = words.lastIndex,
+      left = lineLeft,
+      right = lineRight,
+      centerY = sumCenterY / lineCount.toFloat(),
+      height = (sumHeight / lineCount.toFloat()).coerceAtLeast(0.006f)
+    )
+  )
+
+  val paragraphs = mutableListOf<IntRange>()
+  if (lines.size <= 1) {
+    paragraphs.add(0..words.lastIndex)
+  } else {
+    val sortedLefts = lines.map { it.left }.sorted()
+    val sortedRights = lines.map { it.right }.sorted()
+    val sortedHeights = lines.map { it.height }.sorted()
+    val bodyLeft = sortedLefts[(sortedLefts.size * 0.15f).toInt().coerceIn(0, sortedLefts.lastIndex)]
+    val bodyRight = sortedRights[(sortedRights.size * 0.85f).toInt().coerceIn(0, sortedRights.lastIndex)]
+    val bodyWidth = (bodyRight - bodyLeft).coerceAtLeast(0.25f)
+    val medianLineH = sortedHeights[sortedHeights.size / 2].coerceAtLeast(0.006f)
+
+    val dySteps = (1 until lines.size).mapNotNull { k ->
+      val dy = lines[k].centerY - lines[k - 1].centerY
+      if (dy > 0.002f && dy < medianLineH * 4f) dy else null
+    }.sorted()
+    val medianDy = if (dySteps.isNotEmpty()) dySteps[dySteps.size / 2] else medianLineH * 1.25f
+
+    var paraStartWord = lines[0].startIdx
+    for (k in 1 until lines.size) {
+      val prev = lines[k - 1]
+      val cur = lines[k]
+      val dy = cur.centerY - prev.centerY
+      val verticalGapBreak = dy < 0f || dy > maxOf(medianDy * 1.32f, medianLineH * 1.95f)
+      val shortPrevLineBreak = (bodyRight - prev.right) > maxOf(bodyWidth * 0.22f, medianLineH * 4.0f)
+      val indentThreshold = maxOf(medianLineH * 0.9f, 0.015f)
+      val prevNormalMargin = maxOf(medianLineH * 0.6f, 0.010f)
+      val firstLineIndentBreak = (cur.left - bodyLeft) > indentThreshold && (prev.left - bodyLeft) <= prevNormalMargin
+      val shiftBreak = abs(cur.left - prev.left) > bodyWidth * 0.35f
+
+      if (verticalGapBreak || shortPrevLineBreak || firstLineIndentBreak || shiftBreak) {
+        paragraphs.add(paraStartWord..prev.endIdx)
+        paraStartWord = cur.startIdx
+      }
+    }
+    paragraphs.add(paraStartWord..lines.last().endIdx)
+  }
+
+  val s = minOf(startWord, endWord).coerceIn(0, words.lastIndex)
+  val e = maxOf(startWord, endWord).coerceIn(s, words.lastIndex)
+  val startPara = paragraphs.firstOrNull { s in it } ?: return s..e
+  val endPara = paragraphs.firstOrNull { e in it } ?: return s..e
+  return startPara.first..endPara.last
+}
+
 private fun pdfNormToOverlayPoint(
   normX: Float,
   normY: Float,
@@ -296,10 +409,11 @@ fun PdfReaderContent(
   topOverlayClearanceDp: androidx.compose.ui.unit.Dp = 0.dp,
   onToggleControls: () -> Unit,
   onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit = { _, _, _, _ -> },
+  onOpenPageNotesList: () -> Unit = {},
   onCopyPlainText: (String) -> Unit = {},
-  onCopyCitation: (text: String, locationLabel: String) -> Unit = { _, _ -> },
   onShareSelection: (text: String, locationLabel: String) -> Unit = { _, _ -> },
   onPageChanged: (pageIndex: Int, overallProgress: Float) -> Unit,
+  onActiveSelectionInfoChanged: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String?) -> Unit = { _, _, _, _ -> },
   modifier: Modifier = Modifier
 ) {
   val colorFilter = remember(preferences.readerTheme, preferences.pdfNightFilter) {
@@ -351,9 +465,9 @@ fun PdfReaderContent(
       onToggleControls = onToggleControls,
       onOpenFragmentTools = onOpenFragmentTools,
       onCopyPlainText = onCopyPlainText,
-      onCopyCitation = onCopyCitation,
       onShareSelection = onShareSelection,
       onPageChanged = onPageChanged,
+      onActiveSelectionInfoChanged = onActiveSelectionInfoChanged,
       modifier = modifier
     )
   } else {
@@ -368,10 +482,11 @@ fun PdfReaderContent(
       topOverlayClearanceDp = topOverlayClearanceDp,
       onToggleControls = onToggleControls,
       onOpenFragmentTools = onOpenFragmentTools,
+      onOpenPageNotesList = onOpenPageNotesList,
       onCopyPlainText = onCopyPlainText,
-      onCopyCitation = onCopyCitation,
       onShareSelection = onShareSelection,
       onPageChanged = onPageChanged,
+      onActiveSelectionInfoChanged = onActiveSelectionInfoChanged,
       modifier = modifier
     )
   }
@@ -389,10 +504,11 @@ private fun PdfPaginatedReader(
   topOverlayClearanceDp: androidx.compose.ui.unit.Dp,
   onToggleControls: () -> Unit,
   onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit,
+  onOpenPageNotesList: () -> Unit,
   onCopyPlainText: (String) -> Unit,
-  onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPageChanged: (pageIndex: Int, overallProgress: Float) -> Unit,
+  onActiveSelectionInfoChanged: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String?) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val safeCount = pageCount.coerceAtLeast(1)
@@ -432,6 +548,21 @@ private fun PdfPaginatedReader(
     activeSelection = activeSelection?.takeIf { it.pageIndex == pagerState.currentPage }
     val prog = (pagerState.currentPage + 1).toFloat() / safeCount.toFloat()
     onPageChanged(pagerState.currentPage, prog)
+  }
+
+  LaunchedEffect(activeSelection, pageTextCache[activeSelection?.pageIndex ?: -1]) {
+    val sel = activeSelection
+    val data = sel?.let { pageTextCache[it.pageIndex] }
+    if (sel != null && data != null && !data.isScanned) {
+      val txt = extractSelectedPdfText(data.words, sel)
+      if (txt.isNotEmpty()) {
+        onActiveSelectionInfoChanged(sel.pageIndex, sel.startWord, sel.endWord + 1, txt)
+      } else {
+        onActiveSelectionInfoChanged(-1, -1, -1, null)
+      }
+    } else {
+      onActiveSelectionInfoChanged(-1, -1, -1, null)
+    }
   }
 
   val latestSelection by rememberUpdatedState(activeSelection)
@@ -499,12 +630,7 @@ private fun PdfPaginatedReader(
                 onToggleControls()
               }
             },
-            onOpenPageNotes = {
-              val noteExcerpt = notesByPage[pageIdx]?.firstOrNull()?.excerpt
-                ?.takeIf { it.isNotBlank() }
-                ?: "$bookTitle · Página ${pageIdx + 1}"
-              onOpenFragmentTools(pageIdx, -1, -1, noteExcerpt)
-            },
+            onOpenPageNotes = onOpenPageNotesList,
             onSelectWord = { wordIdx ->
               val data = pageTextCache[pageIdx]
               if (data != null && !data.isScanned && wordIdx in data.words.indices) {
@@ -597,10 +723,12 @@ private fun PdfPaginatedReader(
               activeSelection = null
             }
           },
-          onCopyCitation = {
+          onSelectParagraph = {
             if (!activePageText.isScanned) {
-              onCopyCitation(selectedText, locationLabel)
-              activeSelection = null
+              val para = expandPdfParagraphRange(activePageText.words, sel.startWord, sel.endWord)
+              if (para != null) {
+                activeSelection = sel.copy(anchorWordA = para.first, anchorWordB = para.last)
+              }
             }
           },
           onHighlight = {
@@ -751,7 +879,6 @@ private fun PdfSinglePageView(
       }
       .pointerInput(pageIndex) {
         detectSingleFingerTapAndLongPress(
-          shouldSkipDoubleTap = { latestSelection != null },
           longPressTimeoutMs = SELECTION_LONG_PRESS_DELAY_MS,
           maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
           shouldCancelGesture = { latestIsScrollInProgress() },
@@ -779,14 +906,6 @@ private fun PdfSinglePageView(
               if (wordIdx != null) {
                 latestOnSelectWord(wordIdx)
               }
-            }
-          },
-          onDoubleTap = {
-            if (latestScale > 1.1f) {
-              scale = 1f
-              offset = Offset.Zero
-            } else {
-              scale = 2.2f
             }
           }
         )
@@ -1003,9 +1122,9 @@ private fun PdfScrollReader(
   onToggleControls: () -> Unit,
   onOpenFragmentTools: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String) -> Unit,
   onCopyPlainText: (String) -> Unit,
-  onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPageChanged: (pageIndex: Int, overallProgress: Float) -> Unit,
+  onActiveSelectionInfoChanged: (pageIndex: Int, startWordIndex: Int, endWordExclusive: Int, text: String?) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val safeCount = pageCount.coerceAtLeast(1)
@@ -1057,6 +1176,21 @@ private fun PdfScrollReader(
         val prog = (idx + 1).toFloat() / safeCount.toFloat()
         onPageChanged(idx, prog)
       }
+  }
+
+  LaunchedEffect(activeSelection, pageTextCache[activeSelection?.pageIndex ?: -1]) {
+    val sel = activeSelection
+    val data = sel?.let { pageTextCache[it.pageIndex] }
+    if (sel != null && data != null && !data.isScanned) {
+      val txt = extractSelectedPdfText(data.words, sel)
+      if (txt.isNotEmpty()) {
+        onActiveSelectionInfoChanged(sel.pageIndex, sel.startWord, sel.endWord + 1, txt)
+      } else {
+        onActiveSelectionInfoChanged(-1, -1, -1, null)
+      }
+    } else {
+      onActiveSelectionInfoChanged(-1, -1, -1, null)
+    }
   }
 
   Box(
@@ -1215,10 +1349,12 @@ private fun PdfScrollReader(
               activeSelection = null
             }
           },
-          onCopyCitation = {
+          onSelectParagraph = {
             if (!activePageText.isScanned) {
-              onCopyCitation(selectedText, locationLabel)
-              activeSelection = null
+              val para = expandPdfParagraphRange(activePageText.words, sel.startWord, sel.endWord)
+              if (para != null) {
+                activeSelection = sel.copy(anchorWordA = para.first, anchorWordB = para.last)
+              }
             }
           },
           onHighlight = {
@@ -1379,7 +1515,6 @@ private fun PdfScrollPageCard(
       }
       .pointerInput(pageIndex) {
         detectSingleFingerTapAndLongPress(
-          shouldSkipDoubleTap = { latestSelection != null },
           longPressTimeoutMs = SELECTION_LONG_PRESS_DELAY_MS,
           maxTapDurationMs = PDF_DELIBERATE_TAP_MAX_DURATION_MS,
           shouldCancelGesture = { latestIsScrollInProgress() },
@@ -1395,14 +1530,6 @@ private fun PdfScrollPageCard(
             )
             val isCenter = isDeliberatePdfCenterTap(posInViewport, latestViewportContainerSize)
             latestOnTapPage(isCenter)
-          },
-          onDoubleTap = {
-            if (latestScale > 1.1f) {
-              scale = 1f
-              panOffset = Offset.Zero
-            } else {
-              scale = 2.2f
-            }
           },
           onLongPress = { tapOffset ->
             val data = latestPageText

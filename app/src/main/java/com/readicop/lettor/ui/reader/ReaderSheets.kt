@@ -769,9 +769,10 @@ fun ReaderTocAndBookmarksSheet(
   onJumpToUnit: (Int) -> Unit,
   onDeleteBookmark: (Long) -> Unit,
   onDeleteHighlight: (Long) -> Unit,
+  initialTab: Int = 0,
   onDismiss: () -> Unit
 ) {
-  var selectedTab by remember { mutableIntStateOf(0) }
+  var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
 
   ModalBottomSheet(onDismissRequest = onDismiss) {
     Column(

@@ -97,7 +97,7 @@ fun formatBookCitation(
 
 private enum class SelectionCanvasIconType {
   COPY,
-  QUOTE,
+  PARAGRAPH,
   HIGHLIGHT,
   SHARE
 }
@@ -120,7 +120,7 @@ fun ReaderSelectionOverlay(
   onDragAnchorB: (Offset) -> Unit,
   onDragFinished: () -> Unit = {},
   onCopyPlain: () -> Unit,
-  onCopyCitation: () -> Unit,
+  onSelectParagraph: () -> Unit,
   onHighlight: () -> Unit,
   onShare: () -> Unit,
   modifier: Modifier = Modifier
@@ -196,7 +196,7 @@ fun ReaderSelectionOverlay(
           copyEnabled = copyEnabled,
           highlightEnabled = highlightEnabled,
           onCopyPlain = onCopyPlain,
-          onCopyCitation = onCopyCitation,
+          onSelectParagraph = onSelectParagraph,
           onHighlight = onHighlight,
           onShare = onShare
         )
@@ -366,7 +366,7 @@ private fun SelectionFloatingMenu(
   copyEnabled: Boolean,
   highlightEnabled: Boolean,
   onCopyPlain: () -> Unit,
-  onCopyCitation: () -> Unit,
+  onSelectParagraph: () -> Unit,
   onHighlight: () -> Unit,
   onShare: () -> Unit
 ) {
@@ -442,12 +442,12 @@ private fun SelectionFloatingMenu(
       )
       SelectionCanvasDivider(surfaceColors.divider)
       SelectionCanvasMenuButton(
-        label = "Cita",
-        iconType = SelectionCanvasIconType.QUOTE,
+        label = "Párrafo",
+        iconType = SelectionCanvasIconType.PARAGRAPH,
         enabled = copyEnabled,
         surfaceColors = surfaceColors,
-        testTag = "selection_action_copy_quote",
-        onClick = onCopyCitation
+        testTag = "selection_action_paragraph",
+        onClick = onSelectParagraph
       )
       SelectionCanvasDivider(surfaceColors.divider)
       SelectionCanvasMenuButton(
@@ -561,38 +561,35 @@ private fun SelectionCanvasMenuButton(
           )
         }
 
-        SelectionCanvasIconType.QUOTE -> {
-          // Fine rounded guillemets « » + editorial attribution stroke
-          val leftChevron1 = Path().apply {
-            moveTo(w * 0.30f, h * 0.22f)
-            lineTo(w * 0.13f, h * 0.40f)
-            lineTo(w * 0.30f, h * 0.58f)
+        SelectionCanvasIconType.PARAGRAPH -> {
+          // Fine rounded editorial pilcrow (¶) drawn directly on Canvas
+          val bowl = Path().apply {
+            moveTo(w * 0.50f, h * 0.17f)
+            lineTo(w * 0.36f, h * 0.17f)
+            cubicTo(w * 0.15f, h * 0.17f, w * 0.15f, h * 0.53f, w * 0.36f, h * 0.53f)
+            lineTo(w * 0.50f, h * 0.53f)
           }
-          val leftChevron2 = Path().apply {
-            moveTo(w * 0.47f, h * 0.22f)
-            lineTo(w * 0.30f, h * 0.40f)
-            lineTo(w * 0.47f, h * 0.58f)
-          }
-          val rightChevron1 = Path().apply {
-            moveTo(w * 0.53f, h * 0.22f)
-            lineTo(w * 0.70f, h * 0.40f)
-            lineTo(w * 0.53f, h * 0.58f)
-          }
-          val rightChevron2 = Path().apply {
-            moveTo(w * 0.70f, h * 0.22f)
-            lineTo(w * 0.87f, h * 0.40f)
-            lineTo(w * 0.70f, h * 0.58f)
-          }
-          drawPath(leftChevron1, color = accentTint, style = stroke)
-          drawPath(leftChevron2, color = accentTint, style = stroke)
-          drawPath(rightChevron1, color = iconTint, style = stroke)
-          drawPath(rightChevron2, color = iconTint, style = stroke)
+          drawPath(bowl, color = accentTint, style = stroke)
 
-          // Attribution dash line underneath
+          // Top horizontal bar & twin vertical stems
           drawLine(
-            color = iconTint.copy(alpha = 0.82f),
-            start = Offset(w * 0.22f, h * 0.80f),
-            end = Offset(w * 0.78f, h * 0.80f),
+            color = iconTint,
+            start = Offset(w * 0.42f, h * 0.17f),
+            end = Offset(w * 0.80f, h * 0.17f),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.50f, h * 0.17f),
+            end = Offset(w * 0.50f, h * 0.84f),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.70f, h * 0.17f),
+            end = Offset(w * 0.70f, h * 0.84f),
             strokeWidth = strokePx,
             cap = StrokeCap.Round
           )

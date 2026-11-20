@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -47,7 +48,6 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.StickyNote2
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.TextFormat
 import androidx.compose.material.icons.filled.Timer
@@ -104,7 +104,8 @@ private data class ActiveFragmentSelection(
   val startCharOffset: Int = -1,
   val endCharOffset: Int = -1,
   val text: String,
-  val spokenIndex: Int?
+  val spokenIndex: Int?,
+  val hasSelection: Boolean
 )
 
 @Composable
@@ -119,10 +120,15 @@ fun ReaderScreen(
   var controlsVisible by remember { mutableStateOf(false) }
   var showAppearanceSheet by remember { mutableStateOf(false) }
   var showTocSheet by remember { mutableStateOf(false) }
+  var tocInitialTab by remember { mutableIntStateOf(0) }
   var showSearchSheet by remember { mutableStateOf(false) }
   var searchInitialTab by remember { mutableIntStateOf(0) }
   var showAddNoteDialog by remember { mutableStateOf(false) }
   var activeFragment by remember { mutableStateOf<ActiveFragmentSelection?>(null) }
+  var currentVisibleBlockIndex by remember(uiState.book?.id, uiState.currentUnit) { mutableIntStateOf(0) }
+  var liveSelectionFragment by remember(uiState.book?.id, uiState.currentUnit) {
+    mutableStateOf<ActiveFragmentSelection?>(null)
+  }
 
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
@@ -275,17 +281,6 @@ fun ReaderScreen(
     cm.setPrimaryClip(ClipData.newPlainText("Texto de ${uiState.book?.title.orEmpty()}", selectedText))
     scope.launch { snackbarHostState.showSnackbar("Texto copiado") }
   }
-  val copyBookCitation: (String, String) -> Unit = { selectedText, locationLabel ->
-    val citation = formatBookCitation(
-      selectedText = selectedText,
-      bookTitle = uiState.book?.title.orEmpty(),
-      bookAuthor = uiState.book?.author.orEmpty(),
-      locationLabel = locationLabel
-    )
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("Cita de ${uiState.book?.title.orEmpty()}", citation))
-    scope.launch { snackbarHostState.showSnackbar("Cita copiada") }
-  }
   val shareBookSelection: (String, String) -> Unit = { selectedText, locationLabel ->
     val citation = formatBookCitation(
       selectedText = selectedText,
@@ -385,14 +380,30 @@ fun ReaderScreen(
               startCharOffset = startChar,
               endCharOffset = endChar,
               text = excerpt,
-              spokenIndex = spokenMap[startBlk]
+              spokenIndex = spokenMap[startBlk],
+              hasSelection = true
             )
           },
           onCopyPlainText = copyPlainSelection,
-          onCopyCitation = copyBookCitation,
           onShareSelection = shareBookSelection,
           onPositionChanged = { chIdx, subPage, overall ->
             viewModel.onPositionChanged(chIdx, subPage, overall)
+          },
+          onVisibleBlockChanged = { blockIdx ->
+            currentVisibleBlockIndex = blockIdx
+          },
+          onActiveSelectionInfoChanged = { startBlk, endBlk, startChar, endChar, excerpt ->
+            liveSelectionFragment = if (!excerpt.isNullOrBlank()) {
+              ActiveFragmentSelection(
+                blockIndex = startBlk,
+                endBlockIndex = endBlk,
+                startCharOffset = startChar,
+                endCharOffset = endChar,
+                text = excerpt,
+                spokenIndex = spokenMap[startBlk],
+                hasSelection = true
+              )
+            } else null
           }
         )
       }
@@ -410,21 +421,38 @@ fun ReaderScreen(
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
           topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onOpenFragmentTools = { pageIdx, startWord, endWordExcl, excerpt ->
+          onOpenFragmentTools = { _, startWord, endWordExcl, excerpt ->
             activeFragment = ActiveFragmentSelection(
               blockIndex = -1,
               endBlockIndex = -1,
               startCharOffset = startWord,
               endCharOffset = endWordExcl,
-              text = excerpt.ifBlank { "${uiState.book?.title.orEmpty()} · Página ${pageIdx + 1}" },
-              spokenIndex = null
+              text = excerpt,
+              spokenIndex = null,
+              hasSelection = startWord >= 0 && endWordExcl > startWord && excerpt.isNotBlank()
             )
           },
+          onOpenPageNotesList = {
+            tocInitialTab = 2
+            showTocSheet = true
+          },
           onCopyPlainText = copyPlainSelection,
-          onCopyCitation = copyBookCitation,
           onShareSelection = shareBookSelection,
           onPageChanged = { pageIdx, overall ->
             viewModel.onPositionChanged(pageIdx, 0, overall)
+          },
+          onActiveSelectionInfoChanged = { _, startWord, endWordExcl, excerpt ->
+            liveSelectionFragment = if (!excerpt.isNullOrBlank() && startWord >= 0 && endWordExcl > startWord) {
+              ActiveFragmentSelection(
+                blockIndex = -1,
+                endBlockIndex = -1,
+                startCharOffset = startWord,
+                endCharOffset = endWordExcl,
+                text = excerpt,
+                spokenIndex = null,
+                hasSelection = true
+              )
+            } else null
           }
         )
       }
@@ -625,7 +653,10 @@ fun ReaderScreen(
             }
 
             IconButton(
-              onClick = { showTocSheet = true },
+              onClick = {
+                tocInitialTab = 0
+                showTocSheet = true
+              },
               modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("reader_toc_button")
@@ -744,25 +775,39 @@ fun ReaderScreen(
             }
 
             item {
+              val spokenMapForPosition = remember(uiState.contentState) {
+                val epub = uiState.contentState as? ReaderContentState.EpubReady
+                if (epub == null) emptyMap()
+                else buildMap<Int, Int> {
+                  var idx = 0
+                  epub.activeChapter.blocks.forEachIndexed { blockIdx, block ->
+                    val t = when (block) {
+                      is EpubBlock.Heading -> block.text
+                      is EpubBlock.Paragraph -> block.plainText
+                      is EpubBlock.Quote -> block.plainText
+                      is EpubBlock.Image -> ""
+                    }
+                    if (t.isNotBlank()) put(blockIdx, idx++)
+                  }
+                }
+              }
               FilterChip(
                 selected = false,
                 onClick = {
-                  val fragment = when (val c = uiState.contentState) {
-                    is ReaderContentState.EpubReady -> c.activeChapter.plainText.take(260)
-                    is ReaderContentState.PdfReady -> "${uiState.book?.title.orEmpty()} · Página ${uiState.currentUnit + 1}"
-                    else -> ""
-                  }
-                  activeFragment = ActiveFragmentSelection(
+                  val selected = liveSelectionFragment
+                  activeFragment = selected ?: ActiveFragmentSelection(
                     blockIndex = -1,
-                    text = fragment.ifBlank { "Nota en posición ${uiState.currentUnit + 1}" },
-                    spokenIndex = null
+                    text = "",
+                    spokenIndex = spokenMapForPosition[currentVisibleBlockIndex]
+                      ?: if (uiState.ttsState.isPlaying) uiState.ttsState.currentBlockIndex else 0,
+                    hasSelection = false
                   )
                 },
                 leadingIcon = {
-                  Icon(Icons.Default.StickyNote2, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
                 },
-                label = { Text("Nota adhesiva") },
-                modifier = Modifier.testTag("quick_tool_sticky_note")
+                label = { Text("Herramientas") },
+                modifier = Modifier.testTag("quick_tool_tools")
               )
             }
 
@@ -919,6 +964,7 @@ fun ReaderScreen(
       onJumpToUnit = viewModel::jumpToUnit,
       onDeleteBookmark = viewModel::deleteBookmark,
       onDeleteHighlight = viewModel::deleteHighlight,
+      initialTab = tocInitialTab,
       onDismiss = { showTocSheet = false }
     )
   }
@@ -946,7 +992,8 @@ fun ReaderScreen(
       bookAuthor = book?.author.orEmpty(),
       fragmentText = frag.text,
       blockIndex = frag.blockIndex,
-      hasHighlightableRange = frag.blockIndex >= 0 || (frag.startCharOffset >= 0 && frag.endCharOffset > frag.startCharOffset),
+      hasHighlightableRange = frag.hasSelection && (frag.blockIndex >= 0 || (frag.startCharOffset >= 0 && frag.endCharOffset > frag.startCharOffset)),
+      hasSelection = frag.hasSelection,
       onSaveHighlight = { note, color, isStickyOnly ->
         viewModel.saveHighlightOrStickyNote(
           unitIndex = uiState.currentUnit,

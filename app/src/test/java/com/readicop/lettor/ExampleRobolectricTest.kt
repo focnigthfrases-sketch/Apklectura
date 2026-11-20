@@ -523,4 +523,85 @@ class ExampleRobolectricTest {
         com.readicop.lettor.ui.reader.SELECTION_LONG_PRESS_DELAY_MS
     )
   }
+
+  @Test
+  fun `epub paragraph button expands active selection to full paragraph or selects fallback block`() {
+    val p0 = "  Primer párrafo completo de prueba.  "
+    val p1 = "Segundo párrafo con varias palabras para probar."
+    val blocks = listOf(
+      com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+        androidx.compose.ui.text.AnnotatedString(p0),
+        p0
+      ),
+      com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+        androidx.compose.ui.text.AnnotatedString(p1),
+        p1
+      )
+    )
+
+    // Partial word selection in block 0 expands to full trimmed paragraph bounds [2..36)
+    val wordSel = com.readicop.lettor.ui.reader.EpubTextSelection(
+      chapterIndex = 3,
+      anchorA = com.readicop.lettor.ui.reader.EpubCharPosition(0, 9),
+      anchorB = com.readicop.lettor.ui.reader.EpubCharPosition(0, 16)
+    )
+    val expanded = com.readicop.lettor.ui.reader.expandEpubSelectionToParagraph(
+      blocks = blocks,
+      selection = wordSel,
+      fallbackBlockIndex = 1,
+      chapterIndex = 3
+    )!!
+    assertEquals(0, expanded.start.blockIndex)
+    assertEquals(2, expanded.start.charOffset)
+    assertEquals(0, expanded.end.blockIndex)
+    assertEquals(36, expanded.end.charOffset)
+    assertEquals("Primer párrafo completo de prueba.", com.readicop.lettor.ui.reader.extractSelectedEpubText(blocks, expanded))
+
+    // Null selection falls back to reading position block 1
+    val fallback = com.readicop.lettor.ui.reader.expandEpubSelectionToParagraph(
+      blocks = blocks,
+      selection = null,
+      fallbackBlockIndex = 1,
+      chapterIndex = 3
+    )!!
+    assertEquals(1, fallback.start.blockIndex)
+    assertEquals(0, fallback.start.charOffset)
+    assertEquals(p1.length, fallback.end.charOffset)
+    assertEquals(p1, com.readicop.lettor.ui.reader.extractSelectedEpubText(blocks, fallback))
+  }
+
+  @Test
+  fun `pdf paragraph expansion detects paragraph boundaries and expands word selection`() {
+    fun word(idx: Int, text: String, l: Float, t: Float, r: Float, b: Float) =
+      com.readicop.lettor.domain.engine.PdfGlyphWord(
+        index = idx,
+        text = text,
+        rect = com.readicop.lettor.domain.engine.PdfNormalizedRect(l, t, r, b),
+        charRects = emptyList()
+      )
+
+    // Paragraph 1: two lines (line 0 + line 1), followed by vertical gap before Paragraph 2 (line 2 + line 3)
+    val words = listOf(
+      // Line 0 (y 0.10..0.12)
+      word(0, "En", 0.10f, 0.10f, 0.18f, 0.12f),
+      word(1, "un", 0.20f, 0.10f, 0.30f, 0.12f),
+      word(2, "lugar", 0.32f, 0.10f, 0.88f, 0.12f),
+      // Line 1 (y 0.13..0.15) - short last line of Paragraph 1
+      word(3, "de", 0.10f, 0.13f, 0.20f, 0.15f),
+      word(4, "la", 0.22f, 0.13f, 0.30f, 0.15f),
+      word(5, "Mancha.", 0.32f, 0.13f, 0.50f, 0.15f),
+      // Line 2 (y 0.19..0.21) - Paragraph 2 after vertical gap
+      word(6, "No", 0.14f, 0.19f, 0.22f, 0.21f),
+      word(7, "ha", 0.24f, 0.19f, 0.32f, 0.21f),
+      word(8, "mucho", 0.34f, 0.19f, 0.88f, 0.21f),
+      // Line 3 (y 0.22..0.24)
+      word(9, "tiempo.", 0.10f, 0.22f, 0.35f, 0.24f)
+    )
+
+    val para1 = com.readicop.lettor.ui.reader.expandPdfParagraphRange(words, 1, 1)
+    assertEquals(0..5, para1)
+
+    val para2 = com.readicop.lettor.ui.reader.expandPdfParagraphRange(words, 7, 7)
+    assertEquals(6..9, para2)
+  }
 }

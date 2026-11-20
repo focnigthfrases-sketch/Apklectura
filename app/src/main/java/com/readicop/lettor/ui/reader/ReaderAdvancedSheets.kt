@@ -54,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -84,6 +85,7 @@ fun FragmentToolsSheet(
   fragmentText: String,
   blockIndex: Int,
   hasHighlightableRange: Boolean = blockIndex >= 0,
+  hasSelection: Boolean = fragmentText.isNotBlank() && hasHighlightableRange,
   onSaveHighlight: (stickyNote: String, color: HighlightColor, isStickyOnly: Boolean) -> Unit,
   onReadAloudFromHere: (() -> Unit)?,
   onLookupWord: (String) -> DictionaryEntry,
@@ -96,15 +98,20 @@ fun FragmentToolsSheet(
   var stickyNote by remember { mutableStateOf("") }
   var statusFeedback by remember { mutableStateOf<String?>(null) }
 
-  val notableWords = remember(fragmentText) {
-    LocalDictionaryAndTranslator.extractNotableWords(fragmentText)
+  val effectiveFragment = if (hasSelection) fragmentText else ""
+  val notableWords = remember(effectiveFragment) {
+    if (effectiveFragment.isBlank()) emptyList()
+    else LocalDictionaryAndTranslator.extractNotableWords(effectiveFragment)
   }
-  var wordQuery by remember { mutableStateOf(notableWords.firstOrNull().orEmpty()) }
+  var wordQuery by remember(effectiveFragment) {
+    mutableStateOf(notableWords.firstOrNull().orEmpty())
+  }
   var activeDictEntry by remember(wordQuery) {
     mutableStateOf(if (wordQuery.isNotBlank()) onLookupWord(wordQuery) else null)
   }
-  val translationResult = remember(fragmentText) {
-    LocalDictionaryAndTranslator.translateLocally(fragmentText)
+  val translationResult = remember(effectiveFragment) {
+    if (effectiveFragment.isBlank()) null
+    else LocalDictionaryAndTranslator.translateLocally(effectiveFragment)
   }
 
   ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -121,21 +128,38 @@ fun FragmentToolsSheet(
       )
       Spacer(Modifier.height(8.dp))
 
-      Surface(
-        color = selectedColor.washLight,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-      ) {
-        Text(
-          text = "«${fragmentText.take(220)}${if (fragmentText.length > 220) "…" else ""}»",
-          style = MaterialTheme.typography.bodyMedium.copy(
-            fontFamily = LiterataFamily,
-            fontStyle = FontStyle.Italic
-          ),
-          maxLines = 4,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.padding(12.dp)
-        )
+      if (hasSelection && effectiveFragment.isNotBlank()) {
+        Surface(
+          color = selectedColor.washLight,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Text(
+            text = "«${effectiveFragment.take(220)}${if (effectiveFragment.length > 220) "…" else ""}»",
+            style = MaterialTheme.typography.bodyMedium.copy(
+              fontFamily = LiterataFamily,
+              fontStyle = FontStyle.Italic
+            ),
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(12.dp)
+          )
+        }
+      } else {
+        Surface(
+          color = MaterialTheme.colorScheme.surfaceContainerHigh,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("fragment_tools_no_selection_banner")
+        ) {
+          Text(
+            text = "Selecciona texto y presiona Resaltar",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(12.dp)
+          )
+        }
       }
 
       statusFeedback?.let { msg ->
@@ -176,11 +200,18 @@ fun FragmentToolsSheet(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
           ) {
             HighlightColor.entries.forEach { color ->
-              val isSelected = selectedColor == color
+              val isSelected = hasSelection && selectedColor == color
               Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                  .clickable { selectedColor = color }
+                  .alpha(if (hasSelection) 1f else 0.35f)
+                  .then(
+                    if (hasSelection) {
+                      Modifier.clickable { selectedColor = color }
+                    } else {
+                      Modifier
+                    }
+                  )
                   .testTag("highlight_color_${color.name.lowercase()}")
               ) {
                 Box(
@@ -204,6 +235,7 @@ fun FragmentToolsSheet(
           OutlinedTextField(
             value = stickyNote,
             onValueChange = { stickyNote = it },
+            enabled = hasSelection,
             label = { Text("Nota adhesiva (opcional)") },
             placeholder = { Text("Añade una reflexión sobre este pasaje…") },
             minLines = 2,
@@ -221,9 +253,10 @@ fun FragmentToolsSheet(
                 onSaveHighlight(stickyNote, selectedColor, !hasHighlightableRange && stickyNote.isNotBlank())
                 onDismiss()
               },
+              enabled = hasSelection,
               modifier = Modifier.weight(1f).testTag("save_highlight_button")
             ) {
-              Text(if (hasHighlightableRange) "Guardar resaltado" else "Guardar nota adhesiva")
+              Text("Guardar resaltado")
             }
           }
 
@@ -239,9 +272,10 @@ fun FragmentToolsSheet(
             OutlinedButton(
               onClick = {
                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("Fragmento de $bookTitle", fragmentText))
+                cm.setPrimaryClip(ClipData.newPlainText("Fragmento de $bookTitle", effectiveFragment))
                 statusFeedback = "Fragmento copiado al portapapeles"
               },
+              enabled = hasSelection,
               modifier = Modifier.testTag("copy_fragment_button")
             ) {
               Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -251,13 +285,14 @@ fun FragmentToolsSheet(
 
             OutlinedButton(
               onClick = {
-                val shareBody = "«$fragmentText»\n\n— $bookTitle ($bookAuthor), vía Lettor"
+                val shareBody = "«$effectiveFragment»\n\n— $bookTitle ($bookAuthor), vía Lettor"
                 val intent = Intent(Intent.ACTION_SEND).apply {
                   type = "text/plain"
                   putExtra(Intent.EXTRA_TEXT, shareBody)
                 }
                 context.startActivity(Intent.createChooser(intent, "Compartir fragmento"))
               },
+              enabled = hasSelection,
               modifier = Modifier.testTag("share_fragment_button")
             ) {
               Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -383,37 +418,56 @@ fun FragmentToolsSheet(
             modifier = Modifier.fillMaxWidth()
           ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(8.dp))
+              if (translationResult != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                  Spacer(Modifier.width(8.dp))
+                  Text(
+                    text = translationResult.targetLanguageLabel,
+                    style = MaterialTheme.typography.titleSmall
+                  )
+                }
                 Text(
-                  text = translationResult.targetLanguageLabel,
-                  style = MaterialTheme.typography.titleSmall
+                  text = translationResult.translatedText,
+                  style = MaterialTheme.typography.bodyLarge.copy(fontFamily = LiterataFamily)
+                )
+                Text(
+                  text = translationResult.coverageNote,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                  Spacer(Modifier.width(8.dp))
+                  Text(
+                    text = "Traducir fragmento",
+                    style = MaterialTheme.typography.titleSmall
+                  )
+                }
+                Text(
+                  text = "Selecciona texto y presiona Resaltar",
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
               }
-              Text(
-                text = translationResult.translatedText,
-                style = MaterialTheme.typography.bodyLarge.copy(fontFamily = LiterataFamily)
-              )
-              Text(
-                text = translationResult.coverageNote,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-              )
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                   onClick = {
+                    val tr = translationResult ?: return@OutlinedButton
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("Traducción", translationResult.translatedText))
+                    cm.setPrimaryClip(ClipData.newPlainText("Traducción", tr.translatedText))
                     statusFeedback = "Traducción copiada"
-                  }
+                  },
+                  enabled = translationResult != null
                 ) {
                   Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))
                   Text("Copiar")
                 }
                 FilledTonalButton(
-                  onClick = { LocalDictionaryAndTranslator.openExternalTranslator(context, fragmentText) }
+                  onClick = { LocalDictionaryAndTranslator.openExternalTranslator(context, effectiveFragment) },
+                  enabled = translationResult != null
                 ) {
                   Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))

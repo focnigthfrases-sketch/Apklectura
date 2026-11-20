@@ -155,6 +155,54 @@ fun extractSelectedEpubText(blocks: List<EpubBlock>, selection: EpubTextSelectio
   return parts.joinToString("\n\n").trim()
 }
 
+internal fun epubBlockText(block: EpubBlock?): String = when (block) {
+  is EpubBlock.Heading -> block.text
+  is EpubBlock.Paragraph -> block.content.text
+  is EpubBlock.Quote -> block.content.text
+  is EpubBlock.Image, null -> ""
+}
+
+fun expandEpubSelectionToParagraph(
+  blocks: List<EpubBlock>,
+  selection: EpubTextSelection?,
+  fallbackBlockIndex: Int,
+  chapterIndex: Int
+): EpubTextSelection? {
+  if (blocks.isEmpty()) return selection
+  if (selection != null) {
+    val sBlk = selection.start.blockIndex.coerceIn(0, blocks.lastIndex)
+    val eBlk = selection.end.blockIndex.coerceIn(sBlk, blocks.lastIndex)
+    val startText = epubBlockText(blocks.getOrNull(sBlk))
+    val endText = epubBlockText(blocks.getOrNull(eBlk))
+    if (startText.isEmpty() && endText.isEmpty()) return selection
+
+    val startChar = startText.indexOfFirst { !it.isWhitespace() }.let { if (it >= 0) it else 0 }
+    val endChar = if (endText.isNotEmpty()) {
+      endText.trimEnd().length.let { if (it > 0) it else endText.length }
+    } else {
+      0
+    }
+    return EpubTextSelection(
+      chapterIndex = chapterIndex,
+      anchorA = EpubCharPosition(sBlk, startChar),
+      anchorB = EpubCharPosition(eBlk, endChar)
+    )
+  }
+
+  val safeFallback = fallbackBlockIndex.coerceIn(0, blocks.lastIndex)
+  val targetBlk = (safeFallback..blocks.lastIndex).firstOrNull { epubBlockText(blocks[it]).isNotBlank() }
+    ?: (safeFallback downTo 0).firstOrNull { epubBlockText(blocks[it]).isNotBlank() }
+    ?: return null
+  val txt = epubBlockText(blocks[targetBlk])
+  val startChar = txt.indexOfFirst { !it.isWhitespace() }.let { if (it >= 0) it else 0 }
+  val endChar = txt.trimEnd().length.coerceAtLeast((startChar + 1).coerceAtMost(txt.length))
+  return EpubTextSelection(
+    chapterIndex = chapterIndex,
+    anchorA = EpubCharPosition(targetBlk, startChar),
+    anchorB = EpubCharPosition(targetBlk, endChar)
+  )
+}
+
 private data class EpubSliceKey(
   val pageOrScopeId: Int,
   val blockIndex: Int,
@@ -460,9 +508,16 @@ fun EpubReaderContent(
     text: String
   ) -> Unit,
   onCopyPlainText: (String) -> Unit,
-  onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPositionChanged: (chapterIndex: Int, subPage: Int, overallProgress: Float) -> Unit,
+  onVisibleBlockChanged: (Int) -> Unit = {},
+  onActiveSelectionInfoChanged: (
+    startBlockIndex: Int,
+    endBlockIndex: Int,
+    startCharOffset: Int,
+    endCharOffset: Int,
+    text: String?
+  ) -> Unit = { _, _, _, _, _ -> },
   modifier: Modifier = Modifier
 ) {
   val chapterHighlights = remember(highlights, activeChapter.index) {
@@ -490,6 +545,26 @@ fun EpubReaderContent(
     mutableStateOf<EpubTextSelection?>(null)
   }
 
+  LaunchedEffect(activeSelection, activeChapter.index) {
+    val sel = activeSelection
+    if (sel != null && sel.chapterIndex == activeChapter.index) {
+      val txt = extractSelectedEpubText(activeChapter.blocks, sel)
+      if (txt.isNotEmpty()) {
+        onActiveSelectionInfoChanged(
+          sel.start.blockIndex,
+          sel.end.blockIndex,
+          sel.start.charOffset,
+          sel.end.charOffset,
+          txt
+        )
+      } else {
+        onActiveSelectionInfoChanged(-1, -1, -1, -1, null)
+      }
+    } else {
+      onActiveSelectionInfoChanged(-1, -1, -1, -1, null)
+    }
+  }
+
   if (preferences.epubScrollMode) {
     EpubScrollReader(
       chapterStubs = chapterStubs,
@@ -509,13 +584,13 @@ fun EpubReaderContent(
       onToggleControls = onToggleControls,
       onOpenFragmentTools = onOpenFragmentTools,
       onCopyPlainText = onCopyPlainText,
-      onCopyCitation = onCopyCitation,
       onShareSelection = onShareSelection,
       onSelectChapter = { nextIdx ->
         activeSelection = null
         val prog = (nextIdx + 1).toFloat() / chapterStubs.size.coerceAtLeast(1)
         onPositionChanged(nextIdx, 0, prog)
       },
+      onVisibleBlockChanged = onVisibleBlockChanged,
       modifier = modifier
     )
   } else {
@@ -537,9 +612,9 @@ fun EpubReaderContent(
       onToggleControls = onToggleControls,
       onOpenFragmentTools = onOpenFragmentTools,
       onCopyPlainText = onCopyPlainText,
-      onCopyCitation = onCopyCitation,
       onShareSelection = onShareSelection,
       onPositionChanged = onPositionChanged,
+      onVisibleBlockChanged = onVisibleBlockChanged,
       modifier = modifier
     )
   }
@@ -570,9 +645,9 @@ private fun EpubPaginatedReader(
     text: String
   ) -> Unit,
   onCopyPlainText: (String) -> Unit,
-  onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onPositionChanged: (chapterIndex: Int, subPage: Int, overallProgress: Float) -> Unit,
+  onVisibleBlockChanged: (Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val textMeasurer = rememberTextMeasurer()
@@ -701,11 +776,13 @@ private fun EpubPaginatedReader(
       }
     }
 
-    LaunchedEffect(pagerState.currentPage, chapter.index, safePageCount) {
+    LaunchedEffect(pagerState.currentPage, chapter.index, safePageCount, pages) {
       val chapterBase = chapter.index.toFloat() / totalChapters.toFloat()
       val inChapterFraction = (pagerState.currentPage + 1).toFloat() / safePageCount.toFloat()
       val overall = (chapterBase + inChapterFraction / totalChapters.toFloat()).coerceIn(0f, 1f)
       onPositionChanged(chapter.index, pagerState.currentPage, overall)
+      val firstBlock = pages.getOrNull(pagerState.currentPage)?.items?.firstOrNull()?.blockIndex ?: 0
+      onVisibleBlockChanged(firstBlock)
     }
 
     LaunchedEffect(pagerState.currentPage) {
@@ -1112,9 +1189,16 @@ private fun EpubPaginatedReader(
           onCopyPlainText(selectedText)
           onSelectionChanged(null)
         },
-        onCopyCitation = {
-          onCopyCitation(selectedText, locationLabel)
-          onSelectionChanged(null)
+        onSelectParagraph = {
+          val fallbackBlock = pages.getOrNull(pagerState.currentPage)?.items?.firstOrNull()?.blockIndex ?: 0
+          onSelectionChanged(
+            expandEpubSelectionToParagraph(
+              blocks = chapter.blocks,
+              selection = activeSelection,
+              fallbackBlockIndex = fallbackBlock,
+              chapterIndex = chapter.index
+            )
+          )
         },
         onHighlight = {
           onOpenFragmentTools(
@@ -1335,9 +1419,9 @@ private fun EpubScrollReader(
     text: String
   ) -> Unit,
   onCopyPlainText: (String) -> Unit,
-  onCopyCitation: (text: String, locationLabel: String) -> Unit,
   onShareSelection: (text: String, locationLabel: String) -> Unit,
   onSelectChapter: (Int) -> Unit,
+  onVisibleBlockChanged: (Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val listState = rememberLazyListState()
@@ -1363,6 +1447,10 @@ private fun EpubScrollReader(
 
   LaunchedEffect(chapter.index) {
     listState.scrollToItem(0)
+  }
+
+  LaunchedEffect(listState.firstVisibleItemIndex, chapter.index) {
+    onVisibleBlockChanged(listState.firstVisibleItemIndex)
   }
 
   LaunchedEffect(isAutoScrolling, autoScrollSpeed, chapter.index) {
@@ -1698,9 +1786,15 @@ private fun EpubScrollReader(
           onCopyPlainText(selectedText)
           onSelectionChanged(null)
         },
-        onCopyCitation = {
-          onCopyCitation(selectedText, locationLabel)
-          onSelectionChanged(null)
+        onSelectParagraph = {
+          onSelectionChanged(
+            expandEpubSelectionToParagraph(
+              blocks = chapter.blocks,
+              selection = activeSelection,
+              fallbackBlockIndex = listState.firstVisibleItemIndex,
+              chapterIndex = chapter.index
+            )
+          )
         },
         onHighlight = {
           onOpenFragmentTools(
