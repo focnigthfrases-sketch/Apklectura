@@ -61,7 +61,9 @@ sealed interface ReaderContentState {
     val metadata: EpubMetadata,
     val chapterStubs: List<EpubChapterStub>,
     val activeChapter: EpubChapter,
-    val openAtEnd: Boolean = false
+    val openAtEnd: Boolean = false,
+    val loadedChapters: Map<Int, EpubChapter> = mapOf(activeChapter.index to activeChapter),
+    val scrollJumpRequestVersion: Long = 0L
   ) : ReaderContentState
   data class PdfReady(
     val pageCount: Int,
@@ -136,6 +138,8 @@ class ReaderViewModel(
   private val verticalChapterPositions = mutableMapOf<String, EpubVerticalScrollPosition>()
   private val verticalPositionsByChapterFlow = MutableStateFlow<Map<String, EpubVerticalScrollPosition>>(emptyMap())
   private val chapterAnchors = mutableMapOf<String, EpubChapterAnchor>()
+  private val loadedScrollChapters = mutableMapOf<Int, EpubChapter>()
+  private val inFlightChapterLoads = mutableSetOf<Int>()
 
   private val ttsController: TtsReaderController = TtsReaderController(appContext) {
     // Advance to next chapter automatically when TTS finishes a chapter
@@ -292,7 +296,15 @@ class ReaderViewModel(
             horizontalChapterPositions.clear()
             verticalChapterPositions.clear()
             chapterAnchors.clear()
+            loadedScrollChapters.clear()
+            inFlightChapterLoads.clear()
             val activeChapter = withContext(Dispatchers.IO) { session.getChapter(safeUnit) }
+            loadedScrollChapters[safeUnit] = activeChapter
+            for (neighbor in listOf(safeUnit - 1, safeUnit + 1)) {
+              if (neighbor in session.chapterStubs.indices) {
+                session.getCachedChapter(neighbor)?.let { loadedScrollChapters[neighbor] = it }
+              }
+            }
             val chId = epubChapterUniqueId(activeChapter, session.chapterStubs)
             val prefs = preferencesRepository.preferencesFlow.first()
             if (prefs.epubScrollMode && safeSub > 0) {
@@ -323,7 +335,8 @@ class ReaderViewModel(
             contentStateFlow.value = ReaderContentState.EpubReady(
               metadata = session.metadata,
               chapterStubs = session.chapterStubs,
-              activeChapter = activeChapter
+              activeChapter = activeChapter,
+              loadedChapters = loadedScrollChapters.toMap()
             )
             loadChapterIntoTts(activeChapter)
             saveProgressInternal(book, safeUnit, safeSub, session.chapterStubs.size)
@@ -439,10 +452,22 @@ class ReaderViewModel(
       chapterProgressFraction = ((normalized.blockIndex + 1).toFloat() / totalBlocks.toFloat()).coerceIn(0f, 1f)
     )
 
-    if (content.activeChapter.index != chapter.index) {
-      return
-    }
-    if (content.openAtEnd) {
+    val activeChapterChanged = content.activeChapter.index != chapter.index
+    if (activeChapterChanged) {
+      if (!uiState.value.preferences.epubScrollMode) {
+        return
+      }
+      loadedScrollChapters[chapter.index] = chapter
+      contentStateFlow.value = content.copy(
+        activeChapter = chapter,
+        openAtEnd = false,
+        loadedChapters = loadedScrollChapters.toMap()
+      )
+      if (!ttsController.state.value.isPlaying) {
+        loadChapterIntoTts(chapter)
+      }
+      prefetchAdjacentChapters(chapter.index, content.chapterStubs.size)
+    } else if (content.openAtEnd) {
       contentStateFlow.value = content.copy(openAtEnd = false)
     }
     val totalUnits = content.chapterStubs.size.coerceAtLeast(1)
@@ -532,11 +557,19 @@ class ReaderViewModel(
           }
           horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
           verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
+          loadedScrollChapters[safeIdx] = chapter
+          for (neighbor in listOf(safeIdx - 1, safeIdx + 1)) {
+            if (neighbor in latestContent.chapterStubs.indices) {
+              epubSession?.getCachedChapter(neighbor)?.let { loadedScrollChapters[neighbor] = it }
+            }
+          }
           currentSubOffsetFlow.value = restoredSub
           currentUnitFlow.value = safeIdx
           contentStateFlow.value = latestContent.copy(
             activeChapter = chapter,
-            openAtEnd = openAtEnd
+            openAtEnd = openAtEnd,
+            loadedChapters = loadedScrollChapters.toMap(),
+            scrollJumpRequestVersion = latestContent.scrollJumpRequestVersion + 1L
           )
           loadChapterIntoTts(chapter)
           prefetchAdjacentChapters(safeIdx, latestContent.chapterStubs.size)
@@ -902,15 +935,61 @@ class ReaderViewModel(
     }
   }
 
+  fun ensureScrollChapterLoaded(chapterIndex: Int) {
+    val content = contentStateFlow.value as? ReaderContentState.EpubReady ?: return
+    val session = epubSession ?: return
+    if (chapterIndex !in content.chapterStubs.indices) return
+    if (loadedScrollChapters.containsKey(chapterIndex)) return
+    val cached = session.getCachedChapter(chapterIndex)
+    if (cached != null) {
+      loadedScrollChapters[chapterIndex] = cached
+      contentStateFlow.value = content.copy(loadedChapters = loadedScrollChapters.toMap())
+      return
+    }
+    if (!inFlightChapterLoads.add(chapterIndex)) return
+    viewModelScope.launch {
+      try {
+        val parsed = withContext(Dispatchers.IO) {
+          runCatching { session.getChapter(chapterIndex) }.getOrNull()
+        }
+        if (parsed != null) {
+          loadedScrollChapters[chapterIndex] = parsed
+          val latest = contentStateFlow.value as? ReaderContentState.EpubReady ?: return@launch
+          contentStateFlow.value = latest.copy(loadedChapters = loadedScrollChapters.toMap())
+        }
+      } finally {
+        inFlightChapterLoads.remove(chapterIndex)
+      }
+    }
+  }
+
   private fun prefetchAdjacentChapters(centerIndex: Int, totalChapters: Int) {
     val session = epubSession ?: return
     if (totalChapters <= 1) return
     prefetchJob?.cancel()
-    prefetchJob = viewModelScope.launch(Dispatchers.IO) {
-      val neighbors = listOf(centerIndex - 1, centerIndex + 1)
-        .filter { it in 0 until totalChapters && session.getCachedChapter(it) == null }
-      neighbors.forEach { idx ->
-        runCatching { session.getChapter(idx) }
+    prefetchJob = viewModelScope.launch {
+      val targets = ((centerIndex - 2)..(centerIndex + 3))
+        .filter { it in 0 until totalChapters && it != centerIndex }
+      val newlyLoaded = withContext(Dispatchers.IO) {
+        buildMap<Int, EpubChapter> {
+          targets.forEach { idx ->
+            val ch = session.getCachedChapter(idx) ?: runCatching { session.getChapter(idx) }.getOrNull()
+            if (ch != null) put(idx, ch)
+          }
+        }
+      }
+      if (newlyLoaded.isNotEmpty()) {
+        var addedAny = false
+        newlyLoaded.forEach { (idx, ch) ->
+          if (!loadedScrollChapters.containsKey(idx)) {
+            loadedScrollChapters[idx] = ch
+            addedAny = true
+          }
+        }
+        if (addedAny) {
+          val latest = contentStateFlow.value as? ReaderContentState.EpubReady ?: return@launch
+          contentStateFlow.value = latest.copy(loadedChapters = loadedScrollChapters.toMap())
+        }
       }
     }
   }

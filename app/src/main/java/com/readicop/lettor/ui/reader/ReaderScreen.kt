@@ -394,10 +394,13 @@ fun ReaderScreen(
           metadata = content.metadata,
           chapterStubs = content.chapterStubs,
           activeChapter = content.activeChapter,
+          loadedChapters = content.loadedChapters,
+          scrollJumpRequestVersion = content.scrollJumpRequestVersion,
           openAtEnd = content.openAtEnd,
           initialSubPage = uiState.currentSubOffset,
           initialHorizontalPosition = uiState.horizontalChapterPositions[activeChapterId],
           initialVerticalPosition = uiState.verticalChapterPositions[activeChapterId],
+          verticalChapterPositions = uiState.verticalChapterPositions,
           preferences = uiState.preferences,
           surfaceColors = surfaceColors,
           imageCache = imageCache,
@@ -407,6 +410,7 @@ fun ReaderScreen(
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
           topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
           onRequestImage = viewModel::requestEpubImage,
+          onRequestChapter = viewModel::ensureScrollChapterLoaded,
           onToggleControls = { controlsVisible = !controlsVisible },
           onOpenFragmentTools = { startBlk, endBlk, startChar, endChar, excerpt ->
             activeFragment = ActiveFragmentSelection(

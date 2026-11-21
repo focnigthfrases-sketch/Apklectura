@@ -2106,4 +2106,89 @@ class ExampleRobolectricTest {
       )
     )
   }
+
+  @Test
+  fun `continuous vertical epub feed inserts chapter dividers between chapters and resolves block targets`() {
+    val meta = com.readicop.lettor.domain.engine.EpubMetadata(
+      title = "Obra",
+      author = "Autor",
+      genre = "Ficción",
+      description = "",
+      chapterCount = 3,
+      coverZipPath = "images/cover.jpg"
+    )
+    val stubs = listOf(
+      com.readicop.lettor.domain.engine.EpubChapterStub(0, "Portada", "cover.xhtml"),
+      com.readicop.lettor.domain.engine.EpubChapterStub(1, "Capítulo 1", "ch1.xhtml"),
+      com.readicop.lettor.domain.engine.EpubChapterStub(2, "Capítulo 2", "ch2.xhtml")
+    )
+    val ch0 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 0,
+      title = "Portada",
+      zipPath = "cover.xhtml",
+      blocks = listOf(com.readicop.lettor.domain.engine.EpubBlock.Image("images/cover.jpg")),
+      plainText = ""
+    )
+    val ch1 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 1,
+      title = "Capítulo 1",
+      zipPath = "ch1.xhtml",
+      blocks = listOf(
+        com.readicop.lettor.domain.engine.EpubBlock.Heading(1, "Capítulo 1"),
+        com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+          androidx.compose.ui.text.AnnotatedString("Párrafo inicial."),
+          "Párrafo inicial."
+        )
+      ),
+      plainText = "Capítulo 1\n\nPárrafo inicial."
+    )
+
+    val entries = com.readicop.lettor.ui.reader.buildVerticalScrollFeedEntries(
+      chapterStubs = stubs,
+      loadedChapters = mapOf(0 to ch0, 1 to ch1),
+      metadata = meta
+    )
+
+    // Expected: CoverPage(0), ChapterDivider(1), BlockEntry(1,0), BlockEntry(1,1), ChapterDivider(2), LoadingPlaceholder(2)
+    assertEquals(6, entries.size)
+    assertTrue(entries[0] is com.readicop.lettor.ui.reader.EpubVerticalFeedEntry.CoverPage)
+    assertTrue(entries[1] is com.readicop.lettor.ui.reader.EpubVerticalFeedEntry.ChapterDivider)
+    assertEquals(1, entries[1].chapterIndex)
+    assertTrue(entries[2] is com.readicop.lettor.ui.reader.EpubVerticalFeedEntry.BlockEntry)
+    assertTrue(entries[4] is com.readicop.lettor.ui.reader.EpubVerticalFeedEntry.ChapterDivider)
+    assertEquals(2, entries[4].chapterIndex)
+    assertTrue(entries[5] is com.readicop.lettor.ui.reader.EpubVerticalFeedEntry.LoadingPlaceholder)
+
+    assertEquals(0, com.readicop.lettor.ui.reader.resolveVerticalFeedIndex(entries, 0, 0))
+    assertEquals(3, com.readicop.lettor.ui.reader.resolveVerticalFeedIndex(entries, 1, 1))
+    assertEquals(5, com.readicop.lettor.ui.reader.resolveVerticalFeedIndex(entries, 2, 0))
+  }
+
+  @Test
+  fun `horizontal boundary swipe succeeds on a single slightly diagonal swipe`() {
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NEXT_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = false,
+        startedOnLastPage = true,
+        chapterIndex = 0,
+        totalChapters = 5,
+        dx = -110f,
+        dy = 100f,
+        swipeThresholdPx = 80f
+      )
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.PREVIOUS_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubBoundarySwipe(
+        startedOnFirstPage = true,
+        startedOnLastPage = false,
+        chapterIndex = 3,
+        totalChapters = 5,
+        dx = 110f,
+        dy = -95f,
+        swipeThresholdPx = 80f
+      )
+    )
+  }
 }

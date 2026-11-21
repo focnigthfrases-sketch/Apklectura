@@ -62,7 +62,7 @@ data class EpubSearchHit(
  */
 class LazyEpubSession(val file: File) : Closeable {
   private var zipFile: ZipFile? = null
-  private val chapterCache = LruCache<Int, EpubChapter>(12)
+  private val chapterCache = LruCache<Int, EpubChapter>(48)
   @Volatile
   private var isClosed = false
 
