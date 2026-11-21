@@ -399,6 +399,7 @@ fun ReaderScreen(
           openAtEnd = content.openAtEnd,
           initialSubPage = uiState.currentSubOffset,
           initialHorizontalPosition = uiState.horizontalChapterPositions[activeChapterId],
+          horizontalChapterPositions = uiState.horizontalChapterPositions,
           initialVerticalPosition = uiState.verticalChapterPositions[activeChapterId],
           verticalChapterPositions = uiState.verticalChapterPositions,
           preferences = uiState.preferences,

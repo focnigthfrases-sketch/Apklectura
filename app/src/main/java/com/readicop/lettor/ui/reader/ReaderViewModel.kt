@@ -408,10 +408,22 @@ class ReaderViewModel(
       )
     }
 
-    if (content.activeChapter.index != chapter.index) {
-      return
-    }
-    if (content.openAtEnd) {
+    val activeChapterChanged = content.activeChapter.index != chapter.index
+    if (activeChapterChanged) {
+      if (uiState.value.preferences.epubScrollMode) {
+        return
+      }
+      loadedScrollChapters[chapter.index] = chapter
+      contentStateFlow.value = content.copy(
+        activeChapter = chapter,
+        openAtEnd = false,
+        loadedChapters = loadedScrollChapters.toMap()
+      )
+      if (!ttsController.state.value.isPlaying) {
+        loadChapterIntoTts(chapter)
+      }
+      prefetchAdjacentChapters(chapter.index, content.chapterStubs.size)
+    } else if (content.openAtEnd) {
       contentStateFlow.value = content.copy(openAtEnd = false)
     }
     val totalUnits = content.chapterStubs.size.coerceAtLeast(1)

@@ -2191,4 +2191,248 @@ class ExampleRobolectricTest {
       )
     )
   }
+
+  @Test
+  fun `continuous horizontal epub slots connect covers and chapter pages seamlessly and map flat indices`() {
+    val meta = com.readicop.lettor.domain.engine.EpubMetadata(
+      title = "Obra",
+      author = "Autor",
+      genre = "Ficción",
+      description = "",
+      chapterCount = 4,
+      coverZipPath = "images/cover.jpg"
+    )
+    val stubs = listOf(
+      com.readicop.lettor.domain.engine.EpubChapterStub(0, "Portada", "cover.xhtml"),
+      com.readicop.lettor.domain.engine.EpubChapterStub(1, "Capítulo 1", "ch1.xhtml"),
+      com.readicop.lettor.domain.engine.EpubChapterStub(2, "Capítulo 2", "ch2.xhtml"),
+      com.readicop.lettor.domain.engine.EpubChapterStub(3, "Capítulo 3", "ch3.xhtml")
+    )
+    val ch0 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 0,
+      title = "Portada",
+      zipPath = "cover.xhtml",
+      blocks = listOf(com.readicop.lettor.domain.engine.EpubBlock.Image("images/cover.jpg")),
+      plainText = ""
+    )
+    val ch1 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 1,
+      title = "Capítulo 1",
+      zipPath = "ch1.xhtml",
+      blocks = listOf(
+        com.readicop.lettor.domain.engine.EpubBlock.Heading(1, "Capítulo 1")
+      ),
+      plainText = "Capítulo 1"
+    )
+    val ch2 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 2,
+      title = "Capítulo 2",
+      zipPath = "ch2.xhtml",
+      blocks = listOf(
+        com.readicop.lettor.domain.engine.EpubBlock.Heading(1, "Capítulo 2")
+      ),
+      plainText = "Capítulo 2"
+    )
+
+    val fakePageA = com.readicop.lettor.ui.reader.EpubRenderedPage(
+      listOf(com.readicop.lettor.ui.reader.PageSliceItem.HeadingSlice(0, 1, "A"))
+    )
+    val fakePageB = com.readicop.lettor.ui.reader.EpubRenderedPage(
+      listOf(com.readicop.lettor.ui.reader.PageSliceItem.HeadingSlice(1, 1, "B"))
+    )
+    val slots = com.readicop.lettor.ui.reader.buildHorizontalPageSlots(
+      chapterStubs = stubs,
+      loadedChapters = mapOf(0 to ch0, 1 to ch1, 2 to ch2),
+      metadata = meta
+    ) { ch ->
+      when (ch.index) {
+        1 -> listOf(fakePageA, fakePageB)
+        2 -> listOf(fakePageA, fakePageB, fakePageA)
+        else -> listOf(fakePageA)
+      }
+    }
+
+    // Slots: ch0 Cover(0), ch1 pages(1, 2), ch2 pages(3, 4, 5), ch3 Loading(6)
+    assertEquals(7, slots.size)
+    assertTrue(slots[0] is com.readicop.lettor.ui.reader.EpubHorizontalPageSlot.CoverPageSlot)
+    assertTrue(slots[1] is com.readicop.lettor.ui.reader.EpubHorizontalPageSlot.ChapterPageSlot)
+    assertEquals(1, slots[2].chapterIndex)
+    assertEquals(1, (slots[2] as com.readicop.lettor.ui.reader.EpubHorizontalPageSlot.ChapterPageSlot).subPageIndex)
+    assertEquals(2, slots[3].chapterIndex)
+    assertEquals(0, (slots[3] as com.readicop.lettor.ui.reader.EpubHorizontalPageSlot.ChapterPageSlot).subPageIndex)
+    assertTrue(slots[6] is com.readicop.lettor.ui.reader.EpubHorizontalPageSlot.LoadingSlot)
+
+    // Flat lookup maps cover, exact sub-page, and end-of-chapter clamp across boundaries
+    assertEquals(0, com.readicop.lettor.ui.reader.resolveHorizontalFlatPageIndex(slots, 0, 0))
+    assertEquals(2, com.readicop.lettor.ui.reader.resolveHorizontalFlatPageIndex(slots, 1, 99))
+    assertEquals(3, com.readicop.lettor.ui.reader.resolveHorizontalFlatPageIndex(slots, 2, 0))
+    assertEquals(5, com.readicop.lettor.ui.reader.resolveHorizontalFlatPageIndex(slots, 2, 2))
+    assertEquals(6, com.readicop.lettor.ui.reader.resolveHorizontalFlatPageIndex(slots, 3, 0))
+  }
+
+  @Test
+  fun `vertical epub fling velocity scaling damps fast flicks gently in both directions`() {
+    val downVelocity = 4000f
+    val upVelocity = -4000f
+    val dampedDown = com.readicop.lettor.ui.reader.scaleVerticalFlingVelocity(downVelocity)
+    val dampedUp = com.readicop.lettor.ui.reader.scaleVerticalFlingVelocity(upVelocity)
+
+    assertTrue("Expected gentle damping slightly below raw speed", dampedDown in 2200f..3200f)
+    assertEquals(-dampedDown, dampedUp, 0.01f)
+    assertEquals(0f, com.readicop.lettor.ui.reader.scaleVerticalFlingVelocity(0f), 0.01f)
+  }
+
+  @Test
+  fun `onHorizontalPositionChanged switches active chapter seamlessly across continuous swipes`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempEpub = copySampleEpub(context)
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      val prefsRepo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+      kotlinx.coroutines.runBlocking {
+        prefsRepo.setEpubScrollMode(false)
+      }
+      val repo = com.readicop.lettor.data.repository.LibraryRepository(
+        appContext = context,
+        bookDao = db.bookDao(),
+        bookmarkDao = db.bookmarkDao(),
+        highlightDao = db.highlightDao(),
+        vocabularyDao = db.vocabularyDao(),
+        importer = com.readicop.lettor.domain.engine.BookImporter(context),
+        backupManager = com.readicop.lettor.domain.engine.BackupManager(
+          context = context,
+          bookDao = db.bookDao(),
+          bookmarkDao = db.bookmarkDao(),
+          highlightDao = db.highlightDao(),
+          vocabularyDao = db.vocabularyDao()
+        ),
+        preferencesRepository = prefsRepo
+      )
+      val bookId = kotlinx.coroutines.runBlocking {
+        db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Don Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = tempEpub.absolutePath,
+            totalUnits = 4,
+            currentUnit = 0,
+            currentSubOffset = 0
+          )
+        )
+      }
+      runCatching {
+        androidx.work.WorkManager.initialize(
+          context,
+          androidx.work.Configuration.Builder().build()
+        )
+      }
+
+      val vm = com.readicop.lettor.ui.reader.ReaderViewModel(
+        appContext = context,
+        bookId = bookId,
+        initialUnit = 0,
+        repository = repo,
+        preferencesRepository = prefsRepo
+      )
+
+      var latestState = vm.uiState.value
+      val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+        vm.uiState.collect { latestState = it }
+      }
+
+      fun awaitState(
+        timeoutMs: Long = 5000L,
+        predicate: (com.readicop.lettor.ui.reader.ReaderUiState) -> Boolean
+      ): com.readicop.lettor.ui.reader.ReaderUiState {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+          org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+          val current = vm.uiState.value
+          latestState = current
+          if (predicate(current)) return current
+          Thread.sleep(15L)
+        }
+        throw AssertionError("Timed out waiting for ReaderUiState; last=$latestState")
+      }
+
+      try {
+        val readyState = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.loadedChapters.containsKey(1)
+        }
+        val ready = readyState.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        val ch1 = ready.loadedChapters.getValue(1)
+        val ch1Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(ch1, ready.chapterStubs)
+
+        vm.onHorizontalPositionChanged(
+          chapter = ch1,
+          position = com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+            chapterId = ch1Id,
+            chapterIndex = 1,
+            subPage = 0,
+            hasSemanticAnchor = true
+          ),
+          overallProgressFraction = 0.25f
+        )
+
+        val updated = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 1 && !c.openAtEnd
+        }
+        assertEquals(1, updated.currentUnit)
+      } finally {
+        collectJob.cancel()
+        vm.onReaderStopped()
+      }
+    } finally {
+      db.close()
+      tempEpub.delete()
+    }
+  }
+
+  @Test
+  fun `horizontal epub tap zones divide left center and right accurately`() {
+    val width = 1000f
+    // Left 28% -> previous page
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.PREVIOUS_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(120f, width)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.PREVIOUS_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(279f, width)
+    )
+    // Center 28%..72% -> toggle controls
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.TOGGLE_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(280f, width)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.TOGGLE_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(500f, width)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.TOGGLE_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(720f, width)
+    )
+    // Right >72% -> next page
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.NEXT_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(721f, width)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.NEXT_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(980f, width)
+    )
+    // Zero-width safety fallback
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubHorizontalTapAction.TOGGLE_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(50f, 0f)
+    )
+  }
 }
