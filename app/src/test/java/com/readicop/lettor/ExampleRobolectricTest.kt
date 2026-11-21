@@ -2435,4 +2435,92 @@ class ExampleRobolectricTest {
       com.readicop.lettor.ui.reader.resolveEpubHorizontalTapAction(50f, 0f)
     )
   }
+
+  @Test
+  fun `epub screen tap zone uses centered circle and left right page turn outside circle`() {
+    val width = 1000f
+    val height = 2000f
+    val radius = 150f // center at (500, 1000)
+
+    // Dead center and inside circle perimeter -> CENTER_CIRCLE
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(500f, 1000f, width, height, radius)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(600f, 1060f, width, height, radius)
+    )
+    // Corner just outside circle on center vertical midline -> NOT inside circle (uses vertical distance too)
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.PREVIOUS_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(450f, 600f, width, height, radius)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(550f, 1400f, width, height, radius)
+    )
+    // Left and right edges outside circle
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.PREVIOUS_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(120f, 1000f, width, height, radius)
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(880f, 1000f, width, height, radius)
+    )
+  }
+
+  @Test
+  fun `epub tap outcome dismisses open controls on outside tap instead of paging`() {
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubTapOutcome.DISMISS_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubTapOutcome(
+        com.readicop.lettor.ui.reader.EpubScreenTapZone.PREVIOUS_PAGE,
+        controlsVisible = true
+      )
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubTapOutcome.DISMISS_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubTapOutcome(
+        com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
+        controlsVisible = true
+      )
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubTapOutcome.TOGGLE_CONTROLS,
+      com.readicop.lettor.ui.reader.resolveEpubTapOutcome(
+        com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
+        controlsVisible = true
+      )
+    )
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubTapOutcome.NEXT_PAGE,
+      com.readicop.lettor.ui.reader.resolveEpubTapOutcome(
+        com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
+        controlsVisible = false
+      )
+    )
+  }
+
+  @Test
+  fun `global epub page counters round trip cleanly across multiple chapters`() {
+    val counts = listOf(1, 4, 3, 5) // total = 13 pages (0..12)
+    var expectedGlobal = 0
+    for (chIdx in counts.indices) {
+      for (sub in 0 until counts[chIdx]) {
+        assertEquals(
+          expectedGlobal,
+          com.readicop.lettor.ui.reader.resolveGlobalPageFromChapterCounts(counts, chIdx, sub)
+        )
+        assertEquals(
+          chIdx to sub,
+          com.readicop.lettor.ui.reader.resolveChapterAndSubPageForGlobalPage(counts, expectedGlobal)
+        )
+        expectedGlobal++
+      }
+    }
+    assertEquals(3 to 4, com.readicop.lettor.ui.reader.resolveChapterAndSubPageForGlobalPage(counts, 999))
+    assertEquals(0 to 0, com.readicop.lettor.ui.reader.resolveChapterAndSubPageForGlobalPage(counts, -3))
+  }
 }

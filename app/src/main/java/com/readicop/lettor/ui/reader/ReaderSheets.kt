@@ -504,7 +504,13 @@ fun ReaderAppearanceSheet(
       AppearanceSectionCard(
         title = "Brillo",
         icon = AppearanceCanvasIcon.LIGHT,
-        trailingBadge = if (preferences.readerBrightness < 0f) "Auto" else "${(preferences.readerBrightness * 100f).roundToInt()}%",
+        trailingBadge = if (format == BookFormat.EPUB) {
+          null
+        } else if (preferences.readerBrightness < 0f) {
+          "Auto"
+        } else {
+          "${(preferences.readerBrightness * 100f).roundToInt()}%"
+        },
         cardTag = "appearance_card_light"
       ) {
         Row(
@@ -855,13 +861,6 @@ fun ReaderTocAndBookmarksSheet(
                       color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                       maxLines = 2,
                       overflow = TextOverflow.Ellipsis
-                    )
-                  },
-                  leadingContent = {
-                    Text(
-                      text = "${chapter.index + 1}",
-                      style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily),
-                      color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                   },
                   modifier = Modifier

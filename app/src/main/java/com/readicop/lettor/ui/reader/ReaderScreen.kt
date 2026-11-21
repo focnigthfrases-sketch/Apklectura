@@ -72,6 +72,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -139,6 +140,10 @@ fun ReaderScreen(
   var liveSelectionFragment by remember(uiState.book?.id, uiState.currentUnit) {
     mutableStateOf<ActiveFragmentSelection?>(null)
   }
+  var epubCurrentGlobalPage by remember(uiState.book?.id) { mutableIntStateOf(0) }
+  var epubTotalBookPages by remember(uiState.book?.id) { mutableIntStateOf(1) }
+  var epubGlobalPageJumpCounter by remember(uiState.book?.id) { mutableLongStateOf(0L) }
+  var epubGlobalPageJumpRequest by remember(uiState.book?.id) { mutableStateOf<Pair<Long, Int>?>(null) }
 
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
@@ -410,8 +415,17 @@ fun ReaderScreen(
           isAutoScrolling = uiState.isAutoScrolling,
           autoScrollSpeed = uiState.preferences.autoScrollSpeed,
           topOverlayClearanceDp = if (controlsVisible) 76.dp else 4.dp,
+          controlsVisible = controlsVisible,
+          onDismissControls = { controlsVisible = false },
           onRequestImage = viewModel::requestEpubImage,
           onRequestChapter = viewModel::ensureScrollChapterLoaded,
+          onLoadChapterForPagination = viewModel::loadChapterForPagination,
+          globalPageJumpRequest = epubGlobalPageJumpRequest,
+          onGlobalPageStateChanged = { cur, total ->
+            epubCurrentGlobalPage = cur
+            epubTotalBookPages = total
+          },
+          onJumpToChapterPage = viewModel::jumpToChapterPage,
           onToggleControls = { controlsVisible = !controlsVisible },
           onOpenFragmentTools = { startBlk, endBlk, startChar, endChar, excerpt ->
             activeFragment = ActiveFragmentSelection(
@@ -737,15 +751,32 @@ fun ReaderScreen(
       exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
       modifier = Modifier.align(Alignment.BottomCenter)
     ) {
-      val totalUnits = when (val c = uiState.contentState) {
+      val isEpub = uiState.contentState is ReaderContentState.EpubReady
+      val arrowTotalUnits = when (val c = uiState.contentState) {
         is ReaderContentState.EpubReady -> c.chapterStubs.size
         is ReaderContentState.PdfReady -> c.pageCount
         else -> 1
       }.coerceAtLeast(1)
 
-      val unitNoun = if (uiState.book?.format == BookFormat.EPUB) "Capítulo" else "Página"
-      var sliderValue by remember(uiState.currentUnit, totalUnits) {
-        mutableFloatStateOf(uiState.currentUnit.toFloat())
+      val totalUnits = when (val c = uiState.contentState) {
+        is ReaderContentState.EpubReady -> epubTotalBookPages
+        is ReaderContentState.PdfReady -> c.pageCount
+        else -> 1
+      }.coerceAtLeast(1)
+
+      val activeSliderUnit = if (isEpub) {
+        epubCurrentGlobalPage.coerceIn(0, totalUnits - 1)
+      } else {
+        uiState.currentUnit.coerceIn(0, totalUnits - 1)
+      }
+
+      val unitNoun = "Página"
+      var isDraggingSlider by remember { mutableStateOf(false) }
+      var sliderValue by remember { mutableFloatStateOf(activeSliderUnit.toFloat()) }
+      LaunchedEffect(activeSliderUnit, totalUnits, isDraggingSlider) {
+        if (!isDraggingSlider) {
+          sliderValue = activeSliderUnit.toFloat().coerceIn(0f, (totalUnits - 1).coerceAtLeast(0).toFloat())
+        }
       }
 
       Surface(
@@ -879,20 +910,21 @@ fun ReaderScreen(
           Spacer(Modifier.height(6.dp))
 
           Column(modifier = Modifier.padding(horizontal = 18.dp)) {
+            val displayIndex = sliderValue.roundToInt().coerceIn(0, totalUnits - 1)
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
               Text(
-                text = "$unitNoun ${sliderValue.roundToInt() + 1} de $totalUnits",
+                text = "$unitNoun ${displayIndex + 1} de $totalUnits",
                 style = MaterialTheme.typography.labelMedium.copy(
                   fontFamily = JetBrainsMonoFamily,
                   fontWeight = FontWeight.Medium
                 ),
                 color = surfaceColors.text
               )
-              val pct = (((sliderValue.roundToInt() + 1).toFloat() / totalUnits.toFloat()) * 100f)
+              val pct = (((displayIndex + 1).toFloat() / totalUnits.toFloat()) * 100f)
                 .roundToInt().coerceIn(0, 100)
               Text(
                 text = "$pct%",
@@ -916,18 +948,27 @@ fun ReaderScreen(
               ) {
                 Icon(
                   imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                  contentDescription = "Anterior",
+                  contentDescription = if (isEpub) "Capítulo anterior" else "Anterior",
                   tint = surfaceColors.text
                 )
               }
 
               if (totalUnits > 1) {
                 LettorThinSlider(
-                  value = sliderValue,
-                  onValueChange = { sliderValue = it },
+                  value = sliderValue.coerceIn(0f, (totalUnits - 1).toFloat()),
+                  onValueChange = {
+                    isDraggingSlider = true
+                    sliderValue = it
+                  },
                   onValueChangeFinished = {
+                    isDraggingSlider = false
                     val target = sliderValue.roundToInt().coerceIn(0, totalUnits - 1)
-                    viewModel.jumpToUnit(target)
+                    if (isEpub) {
+                      epubGlobalPageJumpCounter += 1L
+                      epubGlobalPageJumpRequest = epubGlobalPageJumpCounter to target
+                    } else {
+                      viewModel.jumpToUnit(target)
+                    }
                   },
                   valueRange = 0f..(totalUnits - 1).toFloat(),
                   accentColor = surfaceColors.accent,
@@ -942,16 +983,16 @@ fun ReaderScreen(
 
               IconButton(
                 onClick = {
-                  if (uiState.currentUnit < totalUnits - 1) {
+                  if (uiState.currentUnit < arrowTotalUnits - 1) {
                     viewModel.jumpToUnit(uiState.currentUnit + 1)
                   }
                 },
-                enabled = uiState.currentUnit < totalUnits - 1,
+                enabled = uiState.currentUnit < arrowTotalUnits - 1,
                 modifier = Modifier.minimumInteractiveComponentSize()
               ) {
                 Icon(
                   imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                  contentDescription = "Siguiente",
+                  contentDescription = if (isEpub) "Capítulo siguiente" else "Siguiente",
                   tint = surfaceColors.text
                 )
               }

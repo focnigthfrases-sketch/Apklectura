@@ -502,6 +502,96 @@ class ReaderViewModel(
   fun jumpToChapterAtBoundary(targetUnit: Int, openAtEnd: Boolean) =
     jumpToUnitInternal(targetUnit, resetSubOffset = !openAtEnd, openAtEnd = openAtEnd)
 
+  fun jumpToChapterPage(
+    targetUnit: Int,
+    subPage: Int,
+    anchorBlockIndex: Int = 0,
+    anchorCharOffset: Int = 0
+  ) {
+    val content = contentStateFlow.value as? ReaderContentState.EpubReady ?: return
+    val safeIdx = targetUnit.coerceIn(0, (content.chapterStubs.size - 1).coerceAtLeast(0))
+    chapterSwitchJob?.cancel()
+    val cachedChapter = epubSession?.getCachedChapter(safeIdx)
+    chapterSwitchJob = viewModelScope.launch {
+      val chapter = cachedChapter ?: withContext(Dispatchers.IO) {
+        epubSession?.getChapter(safeIdx)
+      } ?: return@launch
+      val latestContent = contentStateFlow.value as? ReaderContentState.EpubReady ?: content
+      val chId = epubChapterUniqueId(chapter, latestContent.chapterStubs)
+      val safeSub = subPage.coerceAtLeast(0)
+      val safeBlock = anchorBlockIndex.coerceIn(0, (chapter.blocks.size - 1).coerceAtLeast(0))
+      val safeChar = anchorCharOffset.coerceAtLeast(0)
+      val blockLen = when (val blk = chapter.blocks.getOrNull(safeBlock)) {
+        is com.readicop.lettor.domain.engine.EpubBlock.Heading -> blk.text.length
+        is com.readicop.lettor.domain.engine.EpubBlock.Paragraph -> blk.plainText.length
+        is com.readicop.lettor.domain.engine.EpubBlock.Quote -> blk.plainText.length
+        is com.readicop.lettor.domain.engine.EpubBlock.Image, null -> 0
+      }
+      val blockFraction = if (blockLen > 0) {
+        (safeChar.toFloat() / blockLen.toFloat()).coerceIn(0f, 1f)
+      } else 0f
+      val isScrollMode = uiState.value.preferences.epubScrollMode
+
+      chapterSubOffsets[safeIdx] = safeSub
+      horizontalChapterPositions[chId] = EpubHorizontalPosition(
+        chapterId = chId,
+        chapterIndex = safeIdx,
+        subPage = safeSub,
+        anchorBlockIndex = safeBlock,
+        anchorCharOffsetInBlock = safeChar,
+        chapterProgressFraction = 0f,
+        hasSemanticAnchor = false,
+        layoutKey = null
+      )
+      verticalChapterPositions[chId] = EpubVerticalScrollPosition(
+        chapterId = chId,
+        chapterIndex = safeIdx,
+        blockIndex = safeBlock,
+        scrollOffsetPx = 0,
+        blockScrollFraction = blockFraction,
+        characterOffsetInBlock = safeChar,
+        layoutSignature = null
+      )
+      chapterAnchors[chId] = EpubChapterAnchor(
+        chapterId = chId,
+        chapterIndex = safeIdx,
+        blockIndex = safeBlock,
+        charOffsetInBlock = safeChar,
+        blockScrollFraction = blockFraction,
+        chapterProgressFraction = 0f
+      )
+      horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
+      verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
+      loadedScrollChapters[safeIdx] = chapter
+      for (neighbor in listOf(safeIdx - 1, safeIdx + 1)) {
+        if (neighbor in latestContent.chapterStubs.indices) {
+          epubSession?.getCachedChapter(neighbor)?.let { loadedScrollChapters[neighbor] = it }
+        }
+      }
+      val restoredSub = if (isScrollMode) safeBlock else safeSub
+      currentSubOffsetFlow.value = restoredSub
+      currentUnitFlow.value = safeIdx
+      contentStateFlow.value = latestContent.copy(
+        activeChapter = chapter,
+        openAtEnd = false,
+        loadedChapters = loadedScrollChapters.toMap(),
+        scrollJumpRequestVersion = latestContent.scrollJumpRequestVersion + 1L
+      )
+      loadChapterIntoTts(chapter)
+      prefetchAdjacentChapters(safeIdx, latestContent.chapterStubs.size)
+      val totalUnits = latestContent.chapterStubs.size.coerceAtLeast(1)
+      val prog = ((safeIdx + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
+      val book = uiState.value.book ?: return@launch
+      repository.updateProgress(
+        bookId = book.id,
+        unit = safeIdx,
+        subOffset = restoredSub,
+        progress = prog,
+        isFinished = safeIdx >= totalUnits - 1 && prog >= 0.96f
+      )
+    }
+  }
+
   private fun jumpToUnitInternal(
     targetUnit: Int,
     resetSubOffset: Boolean,
@@ -972,6 +1062,15 @@ class ReaderViewModel(
       } finally {
         inFlightChapterLoads.remove(chapterIndex)
       }
+    }
+  }
+
+  suspend fun loadChapterForPagination(chapterIndex: Int): EpubChapter? {
+    val session = epubSession ?: return null
+    if (chapterIndex !in session.chapterStubs.indices) return null
+    session.getCachedChapter(chapterIndex)?.let { return it }
+    return withContext(Dispatchers.IO) {
+      runCatching { session.getChapter(chapterIndex) }.getOrNull()
     }
   }
 

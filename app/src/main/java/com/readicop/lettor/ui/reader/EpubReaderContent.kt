@@ -1,7 +1,9 @@
 package com.readicop.lettor.ui.reader
 
 import android.graphics.Bitmap
+import androidx.compose.animation.core.AnimationState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateTo
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -35,7 +37,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -52,6 +53,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -69,14 +71,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -106,11 +104,12 @@ import com.readicop.lettor.ui.theme.ReaderSurfaceColors
 import com.readicop.lettor.ui.theme.fontFamily
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import kotlin.math.sign
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 internal enum class EpubBoundaryAction {
   NONE,
@@ -138,6 +137,115 @@ internal fun resolveEpubHorizontalTapAction(
     nx > HORIZONTAL_EPUB_RIGHT_ZONE_FRACTION -> EpubHorizontalTapAction.NEXT_PAGE
     else -> EpubHorizontalTapAction.TOGGLE_CONTROLS
   }
+}
+
+internal enum class EpubScreenTapZone {
+  CENTER_CIRCLE,
+  PREVIOUS_PAGE,
+  NEXT_PAGE
+}
+
+internal enum class EpubTapOutcome {
+  DISMISS_CONTROLS,
+  TOGGLE_CONTROLS,
+  PREVIOUS_PAGE,
+  NEXT_PAGE
+}
+
+internal fun computeEpubCenterCircleRadiusPx(
+  containerWidthPx: Float,
+  containerHeightPx: Float
+): Float {
+  val minDim = minOf(containerWidthPx, containerHeightPx)
+  return (minDim * 0.17f).coerceAtLeast(1f)
+}
+
+private fun computeUiCenterCircleRadiusPx(
+  containerWidthPx: Float,
+  containerHeightPx: Float,
+  density: androidx.compose.ui.unit.Density
+): Float {
+  val proportional = computeEpubCenterCircleRadiusPx(containerWidthPx, containerHeightPx)
+  val minPx = with(density) { 56.dp.toPx() }
+  val maxPx = with(density) { 92.dp.toPx() }
+  return proportional.coerceIn(minPx, maxPx)
+}
+
+internal fun resolveEpubScreenTapZone(
+  tapX: Float,
+  tapY: Float,
+  containerWidthPx: Float,
+  containerHeightPx: Float,
+  circleRadiusPx: Float = computeEpubCenterCircleRadiusPx(containerWidthPx, containerHeightPx)
+): EpubScreenTapZone {
+  if (containerWidthPx <= 0f || containerHeightPx <= 0f) {
+    return EpubScreenTapZone.CENTER_CIRCLE
+  }
+  val cx = containerWidthPx * 0.5f
+  val cy = containerHeightPx * 0.5f
+  val dx = tapX - cx
+  val dy = tapY - cy
+  val safeRadius = circleRadiusPx.coerceAtLeast(1f)
+  if (dx * dx + dy * dy <= safeRadius * safeRadius) {
+    return EpubScreenTapZone.CENTER_CIRCLE
+  }
+  return if (tapX < cx) {
+    EpubScreenTapZone.PREVIOUS_PAGE
+  } else {
+    EpubScreenTapZone.NEXT_PAGE
+  }
+}
+
+internal fun resolveEpubTapOutcome(
+  zone: EpubScreenTapZone,
+  controlsVisible: Boolean
+): EpubTapOutcome {
+  if (controlsVisible) {
+    return if (zone == EpubScreenTapZone.CENTER_CIRCLE) {
+      EpubTapOutcome.TOGGLE_CONTROLS
+    } else {
+      EpubTapOutcome.DISMISS_CONTROLS
+    }
+  }
+  return when (zone) {
+    EpubScreenTapZone.CENTER_CIRCLE -> EpubTapOutcome.TOGGLE_CONTROLS
+    EpubScreenTapZone.PREVIOUS_PAGE -> EpubTapOutcome.PREVIOUS_PAGE
+    EpubScreenTapZone.NEXT_PAGE -> EpubTapOutcome.NEXT_PAGE
+  }
+}
+
+internal fun resolveGlobalPageFromChapterCounts(
+  chapterPageCounts: List<Int>,
+  chapterIndex: Int,
+  subPageIndex: Int
+): Int {
+  if (chapterPageCounts.isEmpty()) return 0
+  val safeChapter = chapterIndex.coerceIn(0, chapterPageCounts.lastIndex)
+  var offset = 0
+  for (i in 0 until safeChapter) {
+    offset += chapterPageCounts[i].coerceAtLeast(1)
+  }
+  val maxSub = (chapterPageCounts[safeChapter].coerceAtLeast(1) - 1).coerceAtLeast(0)
+  return offset + subPageIndex.coerceIn(0, maxSub)
+}
+
+internal fun resolveChapterAndSubPageForGlobalPage(
+  chapterPageCounts: List<Int>,
+  globalPageIndex: Int
+): Pair<Int, Int> {
+  if (chapterPageCounts.isEmpty()) return 0 to 0
+  val total = chapterPageCounts.sumOf { it.coerceAtLeast(1) }.coerceAtLeast(1)
+  val clampedGlobal = globalPageIndex.coerceIn(0, total - 1)
+  var running = 0
+  for (chIdx in chapterPageCounts.indices) {
+    val count = chapterPageCounts[chIdx].coerceAtLeast(1)
+    if (clampedGlobal < running + count) {
+      return chIdx to (clampedGlobal - running)
+    }
+    running += count
+  }
+  val lastCh = chapterPageCounts.lastIndex
+  return lastCh to (chapterPageCounts[lastCh].coerceAtLeast(1) - 1).coerceAtLeast(0)
 }
 
 internal fun resolveEpubBoundarySwipe(
@@ -921,8 +1029,14 @@ fun EpubReaderContent(
   isAutoScrolling: Boolean,
   autoScrollSpeed: Float,
   topOverlayClearanceDp: Dp = 0.dp,
+  controlsVisible: Boolean = false,
+  onDismissControls: () -> Unit = {},
   onRequestImage: (String) -> Unit,
   onRequestChapter: (Int) -> Unit = {},
+  onLoadChapterForPagination: suspend (Int) -> EpubChapter? = { null },
+  globalPageJumpRequest: Pair<Long, Int>? = null,
+  onGlobalPageStateChanged: (currentGlobalPage: Int, totalBookPages: Int) -> Unit = { _, _ -> },
+  onJumpToChapterPage: (chapterIndex: Int, subPage: Int, anchorBlockIndex: Int, anchorCharOffset: Int) -> Unit = { _, _, _, _ -> },
   onToggleControls: () -> Unit,
   onOpenFragmentTools: (
     startBlockIndex: Int,
@@ -963,6 +1077,24 @@ fun EpubReaderContent(
   modifier: Modifier = Modifier
 ) {
   val pagesCache = remember { EpubPagesCache<EpubRenderedPage>() }
+  val textMeasurer = rememberTextMeasurer()
+  val density = LocalDensity.current
+  val contentInsets = rememberReaderContentInsets()
+  val contentPadding = contentInsets.asPaddingValues()
+  val statusTopDp = contentPadding.calculateTopPadding()
+  val navBottomDp = contentPadding.calculateBottomPadding()
+
+  val bodyFontFamily = preferences.readerFont.fontFamily()
+  val bodyStyle = TextStyle(
+    fontFamily = bodyFontFamily,
+    fontSize = preferences.fontSizeSp.sp,
+    lineHeight = (preferences.fontSizeSp * preferences.lineHeightMultiplier).sp,
+    color = surfaceColors.text
+  )
+  val quoteStyle = bodyStyle.copy(
+    fontStyle = FontStyle.Italic,
+    color = surfaceColors.secondaryText
+  )
 
   val spokenIndexByBlock = remember(activeChapter.index, activeChapter.blocks) {
     buildMap<Int, Int> {
@@ -1011,71 +1143,263 @@ fun EpubReaderContent(
     "${metadata.title}_${chapterStubs.size}_${chapterStubs.firstOrNull()?.zipPath.orEmpty()}"
   }
 
-  if (preferences.epubScrollMode) {
-    key(bookKey) {
-      EpubScrollReader(
-        metadata = metadata,
-        chapterStubs = chapterStubs,
-        chapter = activeChapter,
-        loadedChapters = loadedChapters,
-        scrollJumpRequestVersion = scrollJumpRequestVersion,
-        initialVerticalPosition = initialVerticalPosition,
-        verticalChapterPositions = verticalChapterPositions,
-        initialOpenAtEnd = openAtEnd,
-        surfaceColors = surfaceColors,
-        preferences = preferences,
-        imageCache = imageCache,
-        allHighlights = highlights,
-        spokenIndexByBlock = spokenIndexByBlock,
-        ttsActiveBlockIndex = ttsActiveBlockIndex,
-        isAutoScrolling = isAutoScrolling,
-        autoScrollSpeed = autoScrollSpeed,
-        topOverlayClearanceDp = topOverlayClearanceDp,
-        activeSelection = activeSelection,
-        onSelectionChanged = { activeSelection = it },
-        onRequestImage = onRequestImage,
-        onRequestChapter = onRequestChapter,
-        onToggleControls = onToggleControls,
-        onOpenFragmentTools = onOpenFragmentTools,
-        onCopyPlainText = onCopyPlainText,
-        onShareSelection = onShareSelection,
-        onVerticalPositionChanged = onVerticalPositionChanged,
-        onVisibleBlockChanged = onVisibleBlockChanged,
-        modifier = modifier
+  val latestOnDismissControls by rememberUpdatedState(onDismissControls)
+  val latestOnLoadChapterForPagination by rememberUpdatedState(onLoadChapterForPagination)
+  val latestOnGlobalPageStateChanged by rememberUpdatedState(onGlobalPageStateChanged)
+  val latestOnJumpToChapterPage by rememberUpdatedState(onJumpToChapterPage)
+  val latestLoadedChaptersMap by rememberUpdatedState(loadedChapters)
+
+  BoxWithConstraints(
+    modifier = modifier
+      .fillMaxSize()
+      .pointerInput(controlsVisible) {
+        if (!controlsVisible) return@pointerInput
+        val touchSlop = viewConfiguration.touchSlop
+        awaitEachGesture {
+          val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+          val startPos = down.position
+          val w = size.width.toFloat()
+          val h = size.height.toFloat()
+          val circleR = computeUiCenterCircleRadiusPx(w, h, density)
+          var dismissedThisGesture = false
+          while (true) {
+            val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+            val dist = (change.position - startPos).getDistance()
+            if (!dismissedThisGesture && dist > touchSlop) {
+              val startZone = resolveEpubScreenTapZone(startPos.x, startPos.y, w, h, circleR)
+              val curZone = resolveEpubScreenTapZone(change.position.x, change.position.y, w, h, circleR)
+              if (startZone != EpubScreenTapZone.CENTER_CIRCLE || curZone != EpubScreenTapZone.CENTER_CIRCLE) {
+                dismissedThisGesture = true
+                latestOnDismissControls()
+              }
+            }
+          }
+        }
+      }
+  ) {
+    val contentMaxWidthDp = minOf(maxWidth, 680.dp)
+    val horizontalPad = preferences.horizontalPaddingDp.dp
+    val availableWidthDp = (contentMaxWidthDp - horizontalPad * 2).coerceAtLeast(180.dp)
+    val availableHeightDp = (maxHeight - statusTopDp - navBottomDp - 86.dp).coerceAtLeast(200.dp)
+
+    val availableWidthPx = with(density) { availableWidthDp.roundToPx() }
+    val availableHeightPx = with(density) { availableHeightDp.roundToPx() }
+    val paragraphGapPx = with(density) { 14.dp.roundToPx() }
+    val imageHeightPx = with(density) { 210.dp.roundToPx() }
+    val quoteIndentPx = with(density) { 20.dp.roundToPx() }
+
+    val layoutKey = EpubPaginationLayoutKey(
+      availableWidthPx = availableWidthPx,
+      availableHeightPx = availableHeightPx,
+      fontSizeSp = preferences.fontSizeSp,
+      lineHeightMultiplier = preferences.lineHeightMultiplier,
+      readerFont = preferences.readerFont,
+      horizontalPaddingDp = preferences.horizontalPaddingDp
+    )
+
+    val chapterPageCountsMap = remember(bookKey, layoutKey) {
+      mutableStateMapOf<Int, Int>()
+    }
+    var pageCountsRevision by remember(bookKey, layoutKey) { mutableIntStateOf(0) }
+    var currentVisibleChapterForGlobal by remember(bookKey) { mutableIntStateOf(activeChapter.index) }
+    var currentVisibleSubPageForGlobal by remember(bookKey) { mutableIntStateOf(initialSubPage.coerceAtLeast(0)) }
+
+    fun countChapterPages(ch: EpubChapter): Int {
+      if (findHorizontalEpubCoverImageBlock(ch, metadata) != null) return 1
+      return pagesCache.getOrCompute(ch.index, layoutKey) {
+        paginateChapterBlocks(
+          blocks = ch.blocks,
+          textMeasurer = textMeasurer,
+          bodyStyle = bodyStyle,
+          quoteStyle = quoteStyle,
+          maxWidthPx = layoutKey.availableWidthPx,
+          maxHeightPx = layoutKey.availableHeightPx,
+          quoteWidthPx = (layoutKey.availableWidthPx - quoteIndentPx).coerceAtLeast(120),
+          paragraphGapPx = paragraphGapPx,
+          imageHeightPx = imageHeightPx,
+          density = density
+        )
+      }.size.coerceAtLeast(1)
+    }
+
+    // Seed counts synchronously for already loaded chapters
+    if (!chapterPageCountsMap.containsKey(activeChapter.index)) {
+      chapterPageCountsMap[activeChapter.index] = countChapterPages(activeChapter)
+    }
+    loadedChapters.forEach { (idx, ch) ->
+      if (!chapterPageCountsMap.containsKey(idx)) {
+        chapterPageCountsMap[idx] = countChapterPages(ch)
+      }
+    }
+
+    // Index remaining chapters in background without dropping frames
+    LaunchedEffect(bookKey, layoutKey, chapterStubs.size) {
+      var updated = false
+      for (chIdx in chapterStubs.indices) {
+        if (!chapterPageCountsMap.containsKey(chIdx)) {
+          val ch = latestLoadedChaptersMap[chIdx] ?: latestOnLoadChapterForPagination(chIdx)
+          if (ch != null) {
+            chapterPageCountsMap[chIdx] = countChapterPages(ch)
+            updated = true
+            if (chIdx % 4 == 0) {
+              pageCountsRevision++
+              updated = false
+            }
+          }
+          yield()
+        }
+      }
+      if (updated) {
+        pageCountsRevision++
+      }
+    }
+
+    val bookChapterPageCounts = remember(chapterStubs.size, pageCountsRevision, chapterPageCountsMap.size, layoutKey) {
+      List(chapterStubs.size.coerceAtLeast(1)) { idx ->
+        (chapterPageCountsMap[idx] ?: 1).coerceAtLeast(1)
+      }
+    }
+    val totalBookPages = remember(bookChapterPageCounts) {
+      bookChapterPageCounts.sumOf { it.coerceAtLeast(1) }.coerceAtLeast(1)
+    }
+    val currentGlobalPage = remember(
+      bookChapterPageCounts,
+      currentVisibleChapterForGlobal,
+      currentVisibleSubPageForGlobal
+    ) {
+      resolveGlobalPageFromChapterCounts(
+        chapterPageCounts = bookChapterPageCounts,
+        chapterIndex = currentVisibleChapterForGlobal,
+        subPageIndex = currentVisibleSubPageForGlobal
       )
     }
-  } else {
-    key(bookKey) {
-      EpubPaginatedReader(
-        metadata = metadata,
-        chapterStubs = chapterStubs,
-        chapter = activeChapter,
-        loadedChapters = loadedChapters,
-        scrollJumpRequestVersion = scrollJumpRequestVersion,
-        initialSubPage = initialSubPage,
-        initialHorizontalPosition = initialHorizontalPosition,
-        horizontalChapterPositions = horizontalChapterPositions,
-        initialOpenAtEnd = openAtEnd,
-        pagesCache = pagesCache,
-        surfaceColors = surfaceColors,
-        preferences = preferences,
-        imageCache = imageCache,
-        allHighlights = highlights,
-        spokenIndexByBlock = spokenIndexByBlock,
-        ttsActiveBlockIndex = ttsActiveBlockIndex,
-        topOverlayClearanceDp = topOverlayClearanceDp,
-        activeSelection = activeSelection,
-        onSelectionChanged = { activeSelection = it },
-        onRequestImage = onRequestImage,
-        onRequestChapter = onRequestChapter,
-        onToggleControls = onToggleControls,
-        onOpenFragmentTools = onOpenFragmentTools,
-        onCopyPlainText = onCopyPlainText,
-        onShareSelection = onShareSelection,
-        onHorizontalPositionChanged = onHorizontalPositionChanged,
-        onVisibleBlockChanged = onVisibleBlockChanged,
-        modifier = modifier
+
+    LaunchedEffect(currentGlobalPage, totalBookPages) {
+      latestOnGlobalPageStateChanged(currentGlobalPage, totalBookPages)
+    }
+
+    var lastHandledGlobalJumpVersion by remember(bookKey) { mutableLongStateOf(-1L) }
+    LaunchedEffect(globalPageJumpRequest) {
+      val req = globalPageJumpRequest ?: return@LaunchedEffect
+      if (req.first == lastHandledGlobalJumpVersion) return@LaunchedEffect
+      lastHandledGlobalJumpVersion = req.first
+      val (targetChIdx, targetSubPage) = resolveChapterAndSubPageForGlobalPage(
+        chapterPageCounts = bookChapterPageCounts,
+        globalPageIndex = req.second
       )
+      val targetChapter = latestLoadedChaptersMap[targetChIdx] ?: latestOnLoadChapterForPagination(targetChIdx)
+      var anchorBlock = 0
+      var anchorChar = 0
+      if (targetChapter != null && findHorizontalEpubCoverImageBlock(targetChapter, metadata) == null) {
+        val chPages = pagesCache.getOrCompute(targetChIdx, layoutKey) {
+          paginateChapterBlocks(
+            blocks = targetChapter.blocks,
+            textMeasurer = textMeasurer,
+            bodyStyle = bodyStyle,
+            quoteStyle = quoteStyle,
+            maxWidthPx = layoutKey.availableWidthPx,
+            maxHeightPx = layoutKey.availableHeightPx,
+            quoteWidthPx = (layoutKey.availableWidthPx - quoteIndentPx).coerceAtLeast(120),
+            paragraphGapPx = paragraphGapPx,
+            imageHeightPx = imageHeightPx,
+            density = density
+          )
+        }
+        val clampedSub = targetSubPage.coerceIn(0, (chPages.size - 1).coerceAtLeast(0))
+        val pair = extractHorizontalAnchorForPage(chPages, clampedSub)
+        anchorBlock = pair.first
+        anchorChar = pair.second
+      }
+      latestOnJumpToChapterPage(targetChIdx, targetSubPage, anchorBlock, anchorChar)
+    }
+
+    if (preferences.epubScrollMode) {
+      key(bookKey) {
+        EpubScrollReader(
+          metadata = metadata,
+          chapterStubs = chapterStubs,
+          chapter = activeChapter,
+          loadedChapters = loadedChapters,
+          scrollJumpRequestVersion = scrollJumpRequestVersion,
+          initialVerticalPosition = initialVerticalPosition,
+          verticalChapterPositions = verticalChapterPositions,
+          initialOpenAtEnd = openAtEnd,
+          sharedPagesCache = pagesCache,
+          sharedLayoutKey = layoutKey,
+          sharedBodyStyle = bodyStyle,
+          sharedQuoteStyle = quoteStyle,
+          sharedParagraphGapPx = paragraphGapPx,
+          sharedImageHeightPx = imageHeightPx,
+          sharedQuoteIndentPx = quoteIndentPx,
+          surfaceColors = surfaceColors,
+          preferences = preferences,
+          imageCache = imageCache,
+          allHighlights = highlights,
+          spokenIndexByBlock = spokenIndexByBlock,
+          ttsActiveBlockIndex = ttsActiveBlockIndex,
+          isAutoScrolling = isAutoScrolling,
+          autoScrollSpeed = autoScrollSpeed,
+          topOverlayClearanceDp = topOverlayClearanceDp,
+          controlsVisible = controlsVisible,
+          onDismissControls = onDismissControls,
+          activeSelection = activeSelection,
+          onSelectionChanged = { activeSelection = it },
+          onRequestImage = onRequestImage,
+          onRequestChapter = onRequestChapter,
+          onToggleControls = onToggleControls,
+          onOpenFragmentTools = onOpenFragmentTools,
+          onCopyPlainText = onCopyPlainText,
+          onShareSelection = onShareSelection,
+          onVerticalPositionChanged = onVerticalPositionChanged,
+          onVisibleBlockChanged = onVisibleBlockChanged,
+          onVisiblePageStateChanged = { chIdx, subPage ->
+            currentVisibleChapterForGlobal = chIdx
+            currentVisibleSubPageForGlobal = subPage
+          },
+          modifier = Modifier.fillMaxSize()
+        )
+      }
+    } else {
+      key(bookKey) {
+        EpubPaginatedReader(
+          metadata = metadata,
+          chapterStubs = chapterStubs,
+          chapter = activeChapter,
+          loadedChapters = loadedChapters,
+          scrollJumpRequestVersion = scrollJumpRequestVersion,
+          initialSubPage = initialSubPage,
+          initialHorizontalPosition = initialHorizontalPosition,
+          horizontalChapterPositions = horizontalChapterPositions,
+          initialOpenAtEnd = openAtEnd,
+          pagesCache = pagesCache,
+          surfaceColors = surfaceColors,
+          preferences = preferences,
+          imageCache = imageCache,
+          allHighlights = highlights,
+          spokenIndexByBlock = spokenIndexByBlock,
+          ttsActiveBlockIndex = ttsActiveBlockIndex,
+          topOverlayClearanceDp = topOverlayClearanceDp,
+          controlsVisible = controlsVisible,
+          onDismissControls = onDismissControls,
+          activeSelection = activeSelection,
+          onSelectionChanged = { activeSelection = it },
+          onRequestImage = onRequestImage,
+          onRequestChapter = onRequestChapter,
+          onToggleControls = onToggleControls,
+          onOpenFragmentTools = onOpenFragmentTools,
+          onCopyPlainText = onCopyPlainText,
+          onShareSelection = onShareSelection,
+          onHorizontalPositionChanged = onHorizontalPositionChanged,
+          onVisibleBlockChanged = onVisibleBlockChanged,
+          onVisiblePageStateChanged = { chIdx, subPage ->
+            currentVisibleChapterForGlobal = chIdx
+            currentVisibleSubPageForGlobal = subPage
+          },
+          modifier = Modifier.fillMaxSize()
+        )
+      }
     }
   }
 }
@@ -1213,6 +1537,8 @@ private fun EpubPaginatedReader(
   spokenIndexByBlock: Map<Int, Int>,
   ttsActiveBlockIndex: Int?,
   topOverlayClearanceDp: Dp,
+  controlsVisible: Boolean,
+  onDismissControls: () -> Unit,
   activeSelection: EpubTextSelection?,
   onSelectionChanged: (EpubTextSelection?) -> Unit,
   onRequestImage: (String) -> Unit,
@@ -1233,6 +1559,7 @@ private fun EpubPaginatedReader(
     overallProgress: Float
   ) -> Unit,
   onVisibleBlockChanged: (Int) -> Unit,
+  onVisiblePageStateChanged: (chapterIndex: Int, subPageIndex: Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val textMeasurer = rememberTextMeasurer()
@@ -1274,7 +1601,9 @@ private fun EpubPaginatedReader(
 
   val latestSelection by rememberUpdatedState(activeSelection)
   val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
-  val latestContainerTapHandler = remember { mutableStateOf<(Float) -> Unit>({}) }
+  val latestControlsVisible by rememberUpdatedState(controlsVisible)
+  val latestOnDismissControls by rememberUpdatedState(onDismissControls)
+  val latestContainerTapHandler = remember { mutableStateOf<(Offset) -> Unit>({}) }
 
   // Outer BoxWithConstraints has the exact root origin of ReaderSelectionOverlay (no statusBar shift!)
   BoxWithConstraints(
@@ -1289,7 +1618,7 @@ private fun EpubPaginatedReader(
         detectSingleFingerTapAndLongPress(
           maxTapDurationMs = 350L,
           onTap = { local ->
-            latestContainerTapHandler.value(overlayContainerPosInRoot.x + local.x)
+            latestContainerTapHandler.value(overlayContainerPosInRoot + local)
           }
         )
       }
@@ -1394,7 +1723,7 @@ private fun EpubPaginatedReader(
     val latestOnRequestChapter by rememberUpdatedState(onRequestChapter)
     val latestOnToggleControls by rememberUpdatedState(onToggleControls)
 
-    val handleTapByRootX: (Float) -> Unit = { rootX ->
+    val handleTapByRootOffset: (Offset) -> Unit = { rootOffset ->
       if (latestSelection != null) {
         latestOnSelectionChanged(null)
       } else {
@@ -1403,9 +1732,19 @@ private fun EpubPaginatedReader(
         } else {
           availableWidthPx.toFloat().coerceAtLeast(1f)
         }
-        val xInContainer = (rootX - overlayContainerPosInRoot.x).coerceIn(0f, containerWidthPx)
-        when (resolveEpubHorizontalTapAction(xInContainer, containerWidthPx)) {
-          EpubHorizontalTapAction.PREVIOUS_PAGE -> {
+        val containerHeightPx = if (overlayContainerSize.height > 0) {
+          overlayContainerSize.height.toFloat()
+        } else {
+          availableHeightPx.toFloat().coerceAtLeast(1f)
+        }
+        val localX = (rootOffset.x - overlayContainerPosInRoot.x).coerceIn(0f, containerWidthPx)
+        val localY = (rootOffset.y - overlayContainerPosInRoot.y).coerceIn(0f, containerHeightPx)
+        val circleR = computeUiCenterCircleRadiusPx(containerWidthPx, containerHeightPx, density)
+        val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, circleR)
+        when (resolveEpubTapOutcome(zone, latestControlsVisible)) {
+          EpubTapOutcome.DISMISS_CONTROLS -> latestOnDismissControls()
+          EpubTapOutcome.TOGGLE_CONTROLS -> latestOnToggleControls()
+          EpubTapOutcome.PREVIOUS_PAGE -> {
             val basePage = animatedTapTargetPage ?: pagerState.currentPage
             val target = (basePage - 1).coerceAtLeast(0)
             if (target != pagerState.currentPage || (animatedTapTargetPage != null && animatedTapTargetPage != target)) {
@@ -1424,7 +1763,7 @@ private fun EpubPaginatedReader(
               }
             }
           }
-          EpubHorizontalTapAction.NEXT_PAGE -> {
+          EpubTapOutcome.NEXT_PAGE -> {
             val lastIdx = pageSlots.lastIndex.coerceAtLeast(0)
             val basePage = animatedTapTargetPage ?: pagerState.currentPage
             val target = (basePage + 1).coerceAtMost(lastIdx)
@@ -1444,12 +1783,11 @@ private fun EpubPaginatedReader(
               }
             }
           }
-          EpubHorizontalTapAction.TOGGLE_CONTROLS -> latestOnToggleControls()
         }
       }
     }
-    val latestHandleTapByRootX by rememberUpdatedState(handleTapByRootX)
-    latestContainerTapHandler.value = latestHandleTapByRootX
+    val latestHandleTapByRootOffset by rememberUpdatedState(handleTapByRootOffset)
+    latestContainerTapHandler.value = latestHandleTapByRootOffset
 
     fun buildPositionForSlot(
       slot: EpubHorizontalPageSlot,
@@ -1733,6 +2071,10 @@ private fun EpubPaginatedReader(
       else -> 1
     }
 
+    LaunchedEffect(visibleChapter.index, visibleSubPage) {
+      onVisiblePageStateChanged(visibleChapter.index, visibleSubPage)
+    }
+
     Column(
       modifier = Modifier
         .fillMaxSize()
@@ -1786,7 +2128,7 @@ private fun EpubPaginatedReader(
                 .pointerInput(slot.key) {
                   detectSingleFingerTapAndLongPress(
                     maxTapDurationMs = 350L,
-                    onTap = { offset -> latestHandleTapByRootX(pageBoxPosInRoot.x + offset.x) }
+                    onTap = { offset -> latestHandleTapByRootOffset(pageBoxPosInRoot + offset) }
                   )
                 }
                 .padding(horizontal = horizontalPad, vertical = 6.dp),
@@ -1881,7 +2223,7 @@ private fun EpubPaginatedReader(
                             isTtsActive = isTtsActive,
                             accentColor = surfaceColors.accent,
                             sliceLayouts = sliceLayouts,
-                            onTapXInPage = latestHandleTapByRootX,
+                            onTapRootOffset = latestHandleTapByRootOffset,
                             onSelectWord = { charOffset ->
                               val range = expandWordRangeAtOffset(item.text, charOffset)
                               onSelectionChanged(
@@ -1923,7 +2265,7 @@ private fun EpubPaginatedReader(
                             isTtsActive = isTtsActive,
                             accentColor = surfaceColors.accent,
                             sliceLayouts = sliceLayouts,
-                            onTapXInPage = latestHandleTapByRootX,
+                            onTapRootOffset = latestHandleTapByRootOffset,
                             onSelectWord = { localChar ->
                               val absOffset = (item.startCharOffsetInBlock + localChar).coerceIn(0, (fullBlockText.length - 1).coerceAtLeast(0))
                               val range = expandWordRangeAtOffset(fullBlockText, absOffset)
@@ -1962,7 +2304,7 @@ private fun EpubPaginatedReader(
                             isTtsActive = isTtsActive,
                             accentColor = surfaceColors.accent,
                             sliceLayouts = sliceLayouts,
-                            onTapXInPage = latestHandleTapByRootX,
+                            onTapRootOffset = latestHandleTapByRootOffset,
                             onSelectWord = { localChar ->
                               val absOffset = (item.startCharOffsetInBlock + localChar).coerceIn(0, (fullBlockText.length - 1).coerceAtLeast(0))
                               val range = expandWordRangeAtOffset(fullBlockText, absOffset)
@@ -2140,14 +2482,16 @@ private fun SelectableTextBlockWrapper(
   isTtsActive: Boolean,
   accentColor: Color,
   sliceLayouts: MutableMap<EpubSliceKey, EpubSliceLayoutInfo>,
-  onTapXInPage: (Float) -> Unit,
+  onTapRootOffset: (Offset) -> Unit,
   onSelectWord: (localCharOffset: Int) -> Unit,
   textContent: @Composable (onTextLayout: (TextLayoutResult) -> Unit, textModifier: Modifier) -> Unit
 ) {
-  var blockOffsetX by remember { mutableFloatStateOf(0f) }
+  var blockPosInRoot by remember(sliceKey) { mutableStateOf(Offset.Zero) }
+  var hasBlockPosInRoot by remember(sliceKey) { mutableStateOf(false) }
   var latestLayout by remember(sliceKey) { mutableStateOf<TextLayoutResult?>(null) }
   var latestPosInRoot by remember(sliceKey) { mutableStateOf(Offset.Zero) }
-  val latestOnTapXInPage by rememberUpdatedState(onTapXInPage)
+  var hasPosInRoot by remember(sliceKey) { mutableStateOf(false) }
+  val latestOnTapRootOffset by rememberUpdatedState(onTapRootOffset)
   val latestOnSelectWord by rememberUpdatedState(onSelectWord)
 
   DisposableEffect(sliceKey) {
@@ -2195,7 +2539,8 @@ private fun SelectableTextBlockWrapper(
         } else Modifier
       )
       .onGloballyPositioned { coords ->
-        blockOffsetX = coords.positionInParent().x
+        blockPosInRoot = coords.positionInRoot()
+        hasBlockPosInRoot = true
       }
       .padding(
         horizontal = if (isTtsActive) 6.dp else 0.dp,
@@ -2205,6 +2550,7 @@ private fun SelectableTextBlockWrapper(
     val textModifier = Modifier
       .onGloballyPositioned { coords ->
         val pos = coords.positionInRoot()
+        hasPosInRoot = true
         if (latestPosInRoot != pos) {
           latestPosInRoot = pos
           latestLayout?.let { layout ->
@@ -2258,12 +2604,12 @@ private fun SelectableTextBlockWrapper(
             latestOnSelectWord(localChar)
           },
           onTap = { local ->
-            val tapX = if (latestPosInRoot != Offset.Zero) {
-              latestPosInRoot.x + local.x
-            } else {
-              blockOffsetX + local.x
+            val tapRoot = when {
+              hasPosInRoot -> latestPosInRoot + local
+              hasBlockPosInRoot -> blockPosInRoot + local
+              else -> local
             }
-            latestOnTapXInPage(tapX)
+            latestOnTapRootOffset(tapRoot)
           }
         )
       }
@@ -2431,6 +2777,13 @@ private fun EpubScrollReader(
   initialVerticalPosition: EpubVerticalScrollPosition?,
   verticalChapterPositions: Map<String, EpubVerticalScrollPosition>,
   initialOpenAtEnd: Boolean,
+  sharedPagesCache: EpubPagesCache<EpubRenderedPage>,
+  sharedLayoutKey: EpubPaginationLayoutKey,
+  sharedBodyStyle: TextStyle,
+  sharedQuoteStyle: TextStyle,
+  sharedParagraphGapPx: Int,
+  sharedImageHeightPx: Int,
+  sharedQuoteIndentPx: Int,
   surfaceColors: ReaderSurfaceColors,
   preferences: ReaderPreferences,
   imageCache: Map<String, Bitmap>,
@@ -2440,6 +2793,8 @@ private fun EpubScrollReader(
   isAutoScrolling: Boolean,
   autoScrollSpeed: Float,
   topOverlayClearanceDp: Dp,
+  controlsVisible: Boolean,
+  onDismissControls: () -> Unit,
   activeSelection: EpubTextSelection?,
   onSelectionChanged: (EpubTextSelection?) -> Unit,
   onRequestImage: (String) -> Unit,
@@ -2460,8 +2815,11 @@ private fun EpubScrollReader(
     overallProgress: Float
   ) -> Unit,
   onVisibleBlockChanged: (Int) -> Unit,
+  onVisiblePageStateChanged: (chapterIndex: Int, subPageIndex: Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val scope = rememberCoroutineScope()
+  val textMeasurer = rememberTextMeasurer()
   val totalChapters = chapterStubs.size.coerceAtLeast(1)
   val effectiveLoadedChapters = remember(loadedChapters, chapter) {
     if (loadedChapters.containsKey(chapter.index)) loadedChapters
@@ -2547,7 +2905,53 @@ private fun EpubScrollReader(
   val latestOnRequestChapter by rememberUpdatedState(onRequestChapter)
   val latestSelection by rememberUpdatedState(activeSelection)
   val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
+  val latestControlsVisible by rememberUpdatedState(controlsVisible)
+  val latestOnDismissControls by rememberUpdatedState(onDismissControls)
   val latestOnToggleControls by rememberUpdatedState(onToggleControls)
+  val latestOnVisiblePageStateChanged by rememberUpdatedState(onVisiblePageStateChanged)
+  val latestSharedLayoutKey by rememberUpdatedState(sharedLayoutKey)
+  val latestSharedBodyStyle by rememberUpdatedState(sharedBodyStyle)
+  val latestSharedQuoteStyle by rememberUpdatedState(sharedQuoteStyle)
+
+  fun computeSubPageForVerticalPosition(
+    ch: EpubChapter,
+    blockIndex: Int,
+    charOffsetInBlock: Int,
+    atGlobalEnd: Boolean
+  ): Int {
+    if (findHorizontalEpubCoverImageBlock(ch, metadata) != null) return 0
+    val chPages = sharedPagesCache.getOrCompute(ch.index, latestSharedLayoutKey) {
+      paginateChapterBlocks(
+        blocks = ch.blocks,
+        textMeasurer = textMeasurer,
+        bodyStyle = latestSharedBodyStyle,
+        quoteStyle = latestSharedQuoteStyle,
+        maxWidthPx = latestSharedLayoutKey.availableWidthPx,
+        maxHeightPx = latestSharedLayoutKey.availableHeightPx,
+        quoteWidthPx = (latestSharedLayoutKey.availableWidthPx - sharedQuoteIndentPx).coerceAtLeast(120),
+        paragraphGapPx = sharedParagraphGapPx,
+        imageHeightPx = sharedImageHeightPx,
+        density = density
+      )
+    }
+    if (chPages.isEmpty()) return 0
+    if (atGlobalEnd) return chPages.lastIndex
+    val chId = epubChapterUniqueId(ch, chapterStubs)
+    return resolveHorizontalPageRestoreTarget(
+      saved = EpubHorizontalPosition(
+        chapterId = chId,
+        chapterIndex = ch.index,
+        subPage = 0,
+        anchorBlockIndex = blockIndex,
+        anchorCharOffsetInBlock = charOffsetInBlock,
+        chapterProgressFraction = 0f,
+        hasSemanticAnchor = true,
+        layoutKey = null
+      ),
+      pages = chPages,
+      currentLayoutKey = latestSharedLayoutKey
+    )
+  }
 
   fun captureCurrentVerticalPosition(): Pair<EpubChapter, EpubVerticalScrollPosition>? {
     val entries = latestFeedEntries
@@ -2618,6 +3022,10 @@ private fun EpubScrollReader(
     }
     val flatIdx = resolveVerticalFeedIndex(latestFeedEntries, targetCh.index, targetBlk)
     listState.scrollToItem(flatIdx, targetOff)
+    if (!latestOpenAtEnd && saved != null && saved.characterOffsetInBlock > 0 && saved.layoutSignature == null) {
+      pendingLayoutRestoreAnchor = saved
+      return@LaunchedEffect
+    }
     withFrameNanos { }
     val captured = captureCurrentVerticalPosition()
     if (captured != null) {
@@ -2630,6 +3038,11 @@ private fun EpubScrollReader(
         ch,
         settled,
         computeOverallProgress(ch, settled.blockIndex, findVerticalEpubCoverImageBlock(ch, metadata) != null)
+      )
+      val atEnd = !listState.canScrollForward && ch.index >= totalChapters - 1
+      latestOnVisiblePageStateChanged(
+        ch.index,
+        computeSubPageForVerticalPosition(ch, settled.blockIndex, settled.characterOffsetInBlock, atEnd)
       )
     }
   }
@@ -2749,6 +3162,11 @@ private fun EpubScrollReader(
       val (visibleChapter, pos) = captured
       onVisibleBlockChanged(pos.blockIndex)
       activeAnchor = pos
+      val atEnd = !listState.canScrollForward && visibleChapter.index >= totalChapters - 1
+      latestOnVisiblePageStateChanged(
+        visibleChapter.index,
+        computeSubPageForVerticalPosition(visibleChapter, pos.blockIndex, pos.characterOffsetInBlock, atEnd)
+      )
       if (!isScrolling || pos.blockIndex > 0 || pos.scrollOffsetPx > 0 || visibleChapter.index != latestChapter.index) {
         val isCover = entry is EpubVerticalFeedEntry.CoverPage
         latestOnVerticalPositionChanged(
@@ -2808,6 +3226,68 @@ private fun EpubScrollReader(
     color = surfaceColors.text
   )
 
+  var innerBoxPosInRoot by remember { mutableStateOf(Offset.Zero) }
+  var lazyListPosInRoot by remember { mutableStateOf(Offset.Zero) }
+  var lazyListViewportHeightPx by remember { mutableFloatStateOf(0f) }
+  var pendingTapScrollRemainingPx by remember { mutableFloatStateOf(0f) }
+  var verticalTapScrollJob by remember { mutableStateOf<Job?>(null) }
+
+  fun scrollVerticallyByTap(deltaPx: Float) {
+    pendingTapScrollRemainingPx += deltaPx
+    verticalTapScrollJob?.cancel()
+    verticalTapScrollJob = scope.launch {
+      val targetDelta = pendingTapScrollRemainingPx
+      if (abs(targetDelta) < 1f) {
+        pendingTapScrollRemainingPx = 0f
+        return@launch
+      }
+      val anim = AnimationState(0f)
+      var previousValue = 0f
+      listState.scroll {
+        anim.animateTo(
+          targetValue = targetDelta,
+          animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+        ) {
+          val step = value - previousValue
+          previousValue = value
+          val consumed = scrollBy(step)
+          pendingTapScrollRemainingPx -= step
+          if (abs(consumed) < abs(step) * 0.1f && abs(step) > 2f) {
+            pendingTapScrollRemainingPx = 0f
+            cancelAnimation()
+          }
+        }
+      }
+      pendingTapScrollRemainingPx = 0f
+    }
+  }
+
+  val handleTapByRootOffset: (Offset) -> Unit = { rootOffset ->
+    if (latestSelection != null) {
+      latestOnSelectionChanged(null)
+    } else {
+      val containerWidthPx = overlayContainerSize.width.toFloat().coerceAtLeast(1f)
+      val containerHeightPx = overlayContainerSize.height.toFloat().coerceAtLeast(1f)
+      val localX = (rootOffset.x - overlayContainerPosInRoot.x).coerceIn(0f, containerWidthPx)
+      val localY = (rootOffset.y - overlayContainerPosInRoot.y).coerceIn(0f, containerHeightPx)
+      val circleR = computeUiCenterCircleRadiusPx(containerWidthPx, containerHeightPx, density)
+      val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, circleR)
+      when (resolveEpubTapOutcome(zone, latestControlsVisible)) {
+        EpubTapOutcome.DISMISS_CONTROLS -> latestOnDismissControls()
+        EpubTapOutcome.TOGGLE_CONTROLS -> latestOnToggleControls()
+        EpubTapOutcome.PREVIOUS_PAGE -> {
+          val viewportH = if (lazyListViewportHeightPx > 0f) lazyListViewportHeightPx else containerHeightPx
+          scrollVerticallyByTap(-(viewportH * 0.85f).coerceAtLeast(120f))
+        }
+        EpubTapOutcome.NEXT_PAGE -> {
+          val viewportH = if (lazyListViewportHeightPx > 0f) lazyListViewportHeightPx else containerHeightPx
+          scrollVerticallyByTap((viewportH * 0.85f).coerceAtLeast(120f))
+        }
+      }
+    }
+  }
+  val latestHandleTapByRootOffset by rememberUpdatedState(handleTapByRootOffset)
+
   Box(
     modifier = modifier
       .fillMaxSize()
@@ -2821,12 +3301,12 @@ private fun EpubScrollReader(
       modifier = Modifier
         .fillMaxSize()
         .windowInsetsPadding(contentInsets)
+        .onGloballyPositioned { coords ->
+          innerBoxPosInRoot = coords.positionInRoot()
+        }
         .pointerInput(Unit) {
           detectSingleFingerTapAndLongPress(
-            onTap = {
-              if (latestSelection != null) latestOnSelectionChanged(null)
-              else latestOnToggleControls()
-            }
+            onTap = { local -> latestHandleTapByRootOffset(innerBoxPosInRoot + local) }
           )
         },
       contentAlignment = Alignment.TopCenter
@@ -2844,12 +3324,13 @@ private fun EpubScrollReader(
         modifier = Modifier
           .widthIn(max = 680.dp)
           .fillMaxHeight()
+          .onGloballyPositioned { coords ->
+            lazyListPosInRoot = coords.positionInRoot()
+            lazyListViewportHeightPx = coords.size.height.toFloat()
+          }
           .pointerInput(Unit) {
             detectSingleFingerTapAndLongPress(
-              onTap = {
-                if (latestSelection != null) latestOnSelectionChanged(null)
-                else latestOnToggleControls()
-              }
+              onTap = { local -> latestHandleTapByRootOffset(lazyListPosInRoot + local) }
             )
           }
           .testTag("epub_scroll_list")
@@ -2957,9 +3438,7 @@ private fun EpubScrollReader(
                     isTtsActive = isTtsActive,
                     accentColor = surfaceColors.accent,
                     sliceLayouts = sliceLayouts,
-                    onTapXInPage = {
-                      if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
-                    },
+                    onTapRootOffset = latestHandleTapByRootOffset,
                     onSelectWord = { localChar ->
                       val range = expandWordRangeAtOffset(block.text, localChar)
                       onSelectionChanged(
@@ -2999,9 +3478,7 @@ private fun EpubScrollReader(
                     isTtsActive = isTtsActive,
                     accentColor = surfaceColors.accent,
                     sliceLayouts = sliceLayouts,
-                    onTapXInPage = {
-                      if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
-                    },
+                    onTapRootOffset = latestHandleTapByRootOffset,
                     onSelectWord = { localChar ->
                       val range = expandWordRangeAtOffset(block.content.text, localChar)
                       onSelectionChanged(
@@ -3051,9 +3528,7 @@ private fun EpubScrollReader(
                           isTtsActive = isTtsActive,
                           accentColor = surfaceColors.accent,
                           sliceLayouts = sliceLayouts,
-                          onTapXInPage = {
-                            if (latestSelection != null) latestOnSelectionChanged(null) else latestOnToggleControls()
-                          },
+                          onTapRootOffset = latestHandleTapByRootOffset,
                           onSelectWord = { localChar ->
                             val range = expandWordRangeAtOffset(block.content.text, localChar)
                             onSelectionChanged(
