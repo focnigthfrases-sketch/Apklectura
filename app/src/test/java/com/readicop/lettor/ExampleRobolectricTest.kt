@@ -1778,11 +1778,12 @@ class ExampleRobolectricTest {
         val loaded = awaitState {
           it.contentState is com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
         }
-        val stubs = (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).chapterStubs
+        val loadedReady = loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        val stubs = loadedReady.chapterStubs
 
         // Save an early offset in chapter 1 first, then jump straight to last chapter (index 3) via TOC/slider
         vm.onHorizontalPositionChanged(
-          (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter,
+          loadedReady.activeChapter,
           com.readicop.lettor.ui.reader.EpubHorizontalPosition(
             chapterId = com.readicop.lettor.ui.reader.epubChapterUniqueId(0, stubs[0].zipPath, stubs),
             chapterIndex = 0,
@@ -1880,5 +1881,65 @@ class ExampleRobolectricTest {
       db.close()
       tempEpub.delete()
     }
+  }
+
+  @Test
+  fun `vertical mode supports both vertical pull and horizontal swipe at chapter boundaries`() {
+    // At bottom of chapter, horizontal left swipe advances directly to next chapter
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NEXT_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalOrHorizontalBoundaryAction(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = -160f,
+        dy = 10f,
+        swipeThresholdPx = 100f,
+        gestureScrolledInsideList = false,
+        gestureStartedScrollInProgress = false,
+        overscrollAccumulatedY = 0f
+      )
+    )
+
+    // At top of chapter, horizontal right swipe retreats directly to previous chapter (at end)
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.PREVIOUS_CHAPTER,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalOrHorizontalBoundaryAction(
+        startedAtTop = true,
+        startedAtBottom = false,
+        stillAtTop = true,
+        stillAtBottom = false,
+        chapterIndex = 2,
+        totalChapters = 4,
+        dx = 160f,
+        dy = -10f,
+        swipeThresholdPx = 100f,
+        gestureScrolledInsideList = false,
+        gestureStartedScrollInProgress = false,
+        overscrollAccumulatedY = 0f
+      )
+    )
+
+    // Internal scroll in progress still blocks horizontal or vertical boundary jumps
+    assertEquals(
+      com.readicop.lettor.ui.reader.EpubBoundaryAction.NONE,
+      com.readicop.lettor.ui.reader.resolveEpubVerticalOrHorizontalBoundaryAction(
+        startedAtTop = false,
+        startedAtBottom = true,
+        stillAtTop = false,
+        stillAtBottom = true,
+        chapterIndex = 1,
+        totalChapters = 4,
+        dx = -180f,
+        dy = 0f,
+        swipeThresholdPx = 100f,
+        gestureScrolledInsideList = true,
+        gestureStartedScrollInProgress = false,
+        overscrollAccumulatedY = 0f
+      )
+    )
   }
 }

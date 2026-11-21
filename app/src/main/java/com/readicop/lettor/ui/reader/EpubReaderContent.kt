@@ -94,6 +94,7 @@ import com.readicop.lettor.ui.theme.ReaderSurfaceColors
 import com.readicop.lettor.ui.theme.fontFamily
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sign
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -118,7 +119,7 @@ internal fun resolveEpubBoundarySwipe(
 ): EpubBoundaryAction {
   if (pagerScrollInProgress || !pagerSettledOnStartPage) return EpubBoundaryAction.NONE
   if (abs(dx) < swipeThresholdPx) return EpubBoundaryAction.NONE
-  if (abs(dx) <= abs(dy) * 1.35f) return EpubBoundaryAction.NONE
+  if (abs(dx) <= abs(dy) * 1.1f) return EpubBoundaryAction.NONE
   return when {
     dx < -swipeThresholdPx && startedOnLastPage && chapterIndex < totalChapters - 1 ->
       EpubBoundaryAction.NEXT_CHAPTER
@@ -145,11 +146,51 @@ internal fun resolveEpubVerticalBoundaryScroll(
   if (gestureScrolledInsideList || gestureStartedScrollInProgress) return EpubBoundaryAction.NONE
   if (abs(overscrollAccumulatedY) < swipeThresholdPx) return EpubBoundaryAction.NONE
   if (abs(dy) < swipeThresholdPx) return EpubBoundaryAction.NONE
-  if (abs(dy) <= abs(dx) * 1.25f) return EpubBoundaryAction.NONE
+  if (abs(dy) <= abs(dx) * 1.15f) return EpubBoundaryAction.NONE
   return when {
     overscrollAccumulatedY <= -swipeThresholdPx && dy < 0f && startedAtBottom && stillAtBottom && chapterIndex < totalChapters - 1 ->
       EpubBoundaryAction.NEXT_CHAPTER
     overscrollAccumulatedY >= swipeThresholdPx && dy > 0f && startedAtTop && stillAtTop && chapterIndex > 0 ->
+      EpubBoundaryAction.PREVIOUS_CHAPTER
+    else -> EpubBoundaryAction.NONE
+  }
+}
+
+internal fun resolveEpubVerticalOrHorizontalBoundaryAction(
+  startedAtTop: Boolean,
+  startedAtBottom: Boolean,
+  stillAtTop: Boolean,
+  stillAtBottom: Boolean,
+  chapterIndex: Int,
+  totalChapters: Int,
+  dx: Float,
+  dy: Float,
+  swipeThresholdPx: Float,
+  gestureScrolledInsideList: Boolean = false,
+  gestureStartedScrollInProgress: Boolean = false,
+  overscrollAccumulatedY: Float = dy
+): EpubBoundaryAction {
+  val vertical = resolveEpubVerticalBoundaryScroll(
+    startedAtTop = startedAtTop,
+    startedAtBottom = startedAtBottom,
+    stillAtTop = stillAtTop,
+    stillAtBottom = stillAtBottom,
+    chapterIndex = chapterIndex,
+    totalChapters = totalChapters,
+    dx = dx,
+    dy = dy,
+    swipeThresholdPx = swipeThresholdPx,
+    gestureScrolledInsideList = gestureScrolledInsideList,
+    gestureStartedScrollInProgress = gestureStartedScrollInProgress,
+    overscrollAccumulatedY = overscrollAccumulatedY
+  )
+  if (vertical != EpubBoundaryAction.NONE) return vertical
+  if (gestureScrolledInsideList || gestureStartedScrollInProgress) return EpubBoundaryAction.NONE
+  if (abs(dx) < swipeThresholdPx || abs(dx) <= abs(dy) * 1.25f) return EpubBoundaryAction.NONE
+  return when {
+    dx < -swipeThresholdPx && startedAtBottom && stillAtBottom && chapterIndex < totalChapters - 1 ->
+      EpubBoundaryAction.NEXT_CHAPTER
+    dx > swipeThresholdPx && startedAtTop && stillAtTop && chapterIndex > 0 ->
       EpubBoundaryAction.PREVIOUS_CHAPTER
     else -> EpubBoundaryAction.NONE
   }
@@ -1243,7 +1284,66 @@ private fun EpubPaginatedReader(
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .windowInsetsPadding(contentInsets),
+        .windowInsetsPadding(contentInsets)
+        .pointerInput(chapterId, chapter.index, safePageCount, totalChapters) {
+          val swipeThresholdPx = 44.dp.toPx()
+          awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
+            val startedPage = pagerState.currentPage
+            val startedAtBoundaryOffset = abs(pagerState.currentPageOffsetFraction) < 0.08f
+            val startedOnFirstPage = startedPage <= 0 && !pagerState.canScrollBackward && startedAtBoundaryOffset
+            val startedOnLastPage = startedPage >= safePageCount - 1 && !pagerState.canScrollForward && startedAtBoundaryOffset
+            if (!startedOnFirstPage && !startedOnLastPage) {
+              return@awaitEachGesture
+            }
+
+            val startPos = down.position
+            var multiTouch = false
+            var lastPos = startPos
+
+            while (true) {
+              val event = awaitPointerEvent(PointerEventPass.Initial)
+              if (event.changes.count { it.pressed } > 1) {
+                multiTouch = true
+              }
+              val change = event.changes.firstOrNull { it.id == down.id } ?: break
+              lastPos = change.position
+              if (!change.pressed) break
+            }
+
+            if (multiTouch || latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
+            val stillOnStartPage = pagerState.currentPage == startedPage &&
+              abs(pagerState.currentPageOffsetFraction) < 0.08f
+            when (
+              resolveEpubBoundarySwipe(
+                startedOnFirstPage = startedOnFirstPage,
+                startedOnLastPage = startedOnLastPage,
+                chapterIndex = chapter.index,
+                totalChapters = totalChapters,
+                dx = lastPos.x - startPos.x,
+                dy = lastPos.y - startPos.y,
+                swipeThresholdPx = swipeThresholdPx,
+                pagerSettledOnStartPage = stillOnStartPage,
+                pagerScrollInProgress = false
+              )
+            ) {
+              EpubBoundaryAction.NEXT_CHAPTER -> {
+                chapterSwitchRequested = true
+                val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
+                latestOnHorizontalPositionChanged(chapter, finalPos, overall)
+                latestOnSelectChapterBoundary(chapter.index + 1, false)
+              }
+              EpubBoundaryAction.PREVIOUS_CHAPTER -> {
+                chapterSwitchRequested = true
+                val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
+                latestOnHorizontalPositionChanged(chapter, finalPos, overall)
+                latestOnSelectChapterBoundary(chapter.index - 1, true)
+              }
+              EpubBoundaryAction.NONE -> Unit
+            }
+          }
+        },
       horizontalAlignment = Alignment.CenterHorizontally
     ) {
       // Subtle editorial running header (chapter title on left only)
@@ -1272,63 +1372,6 @@ private fun EpubPaginatedReader(
           .weight(1f)
           .widthIn(max = 680.dp)
           .fillMaxWidth()
-          .pointerInput(chapterId, safePageCount, totalChapters) {
-            val swipeThresholdPx = 56.dp.toPx()
-            awaitEachGesture {
-              val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-              if (latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
-              val startedSettledPage = pagerState.settledPage
-              val startedScrollInProgress = pagerState.isScrollInProgress
-              val startedOnFirstPage = startedSettledPage <= 0 && pagerState.currentPage <= 0
-              val startedOnLastPage = startedSettledPage >= safePageCount - 1 && pagerState.currentPage >= safePageCount - 1
-              if (startedScrollInProgress || (!startedOnFirstPage && !startedOnLastPage)) {
-                return@awaitEachGesture
-              }
-
-              val startPos = down.position
-              var multiTouch = false
-              var lastPos = startPos
-
-              while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Initial)
-                if (event.changes.count { it.pressed } > 1) {
-                  multiTouch = true
-                }
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                lastPos = change.position
-                if (!change.pressed) break
-              }
-
-              if (multiTouch || latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
-              when (
-                resolveEpubBoundarySwipe(
-                  startedOnFirstPage = startedOnFirstPage,
-                  startedOnLastPage = startedOnLastPage,
-                  chapterIndex = chapter.index,
-                  totalChapters = totalChapters,
-                  dx = lastPos.x - startPos.x,
-                  dy = lastPos.y - startPos.y,
-                  swipeThresholdPx = swipeThresholdPx,
-                  pagerSettledOnStartPage = pagerState.settledPage == startedSettledPage,
-                  pagerScrollInProgress = pagerState.isScrollInProgress
-                )
-              ) {
-                EpubBoundaryAction.NEXT_CHAPTER -> {
-                  chapterSwitchRequested = true
-                  val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
-                  latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                  latestOnSelectChapterBoundary(chapter.index + 1, false)
-                }
-                EpubBoundaryAction.PREVIOUS_CHAPTER -> {
-                  chapterSwitchRequested = true
-                  val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
-                  latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                  latestOnSelectChapterBoundary(chapter.index - 1, true)
-                }
-                EpubBoundaryAction.NONE -> Unit
-              }
-            }
-          }
       ) {
         HorizontalPager(
           state = pagerState,
@@ -1344,7 +1387,7 @@ private fun EpubPaginatedReader(
             } else {
               val w = pageWidthPx.coerceAtLeast(1f)
               when {
-                xInPage < w * 0.22f -> {
+                xInPage < w * 0.24f -> {
                   if (pageIdx > 0) {
                     scope.launch { pagerState.animateScrollToPage(pageIdx - 1) }
                   } else if (chapter.index > 0 && !chapterSwitchRequested) {
@@ -1354,7 +1397,7 @@ private fun EpubPaginatedReader(
                     latestOnSelectChapterBoundary(chapter.index - 1, true)
                   }
                 }
-                xInPage > w * 0.78f -> {
+                xInPage > w * 0.76f -> {
                   if (pageIdx < safePageCount - 1) {
                     scope.launch { pagerState.animateScrollToPage(pageIdx + 1) }
                   } else if (chapter.index < totalChapters - 1 && !chapterSwitchRequested) {
@@ -2149,11 +2192,37 @@ private fun EpubScrollReader(
     }
   }
 
+  val latestSelection by rememberUpdatedState(activeSelection)
+  val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
+  val latestOnToggleControls by rememberUpdatedState(onToggleControls)
+  val latestOnSelectChapterBoundary by rememberUpdatedState(onSelectChapterBoundary)
+
   LaunchedEffect(isAutoScrolling, autoScrollSpeed, chapter.index) {
     if (!isAutoScrolling) return@LaunchedEffect
+    var atBottomMs = 0L
     while (isActive) {
-      if (listState.canScrollForward) {
+      if (coverImageBlock == null && listState.canScrollForward) {
+        atBottomMs = 0L
         listState.scrollBy(autoScrollSpeed * 1.15f)
+      } else if (!chapterSwitchRequested && chapter.index < totalChapters - 1) {
+        atBottomMs += 16L
+        if (atBottomMs >= 900L) {
+          chapterSwitchRequested = true
+          if (coverImageBlock == null &&
+            pendingLayoutRestoreAnchor == null &&
+            lastAppliedLayoutSignature == layoutSignature &&
+            listState.layoutInfo.visibleItemsInfo.isNotEmpty()
+          ) {
+            val pos = captureCurrentVerticalPosition()
+            latestOnVerticalPositionChanged(
+              chapter,
+              pos,
+              computeOverallProgress(pos.blockIndex, !listState.canScrollForward)
+            )
+          }
+          latestOnSelectChapterBoundary(chapter.index + 1, false)
+          break
+        }
       }
       delay(16L)
     }
@@ -2176,13 +2245,8 @@ private fun EpubScrollReader(
     color = surfaceColors.text
   )
 
-  val latestSelection by rememberUpdatedState(activeSelection)
-  val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
-  val latestOnToggleControls by rememberUpdatedState(onToggleControls)
-  val latestOnSelectChapterBoundary by rememberUpdatedState(onSelectChapterBoundary)
-
-  val scrollTolerancePx = with(density) { 6.dp.toPx() }
-  val boundaryPullThresholdPx = with(density) { 72.dp.toPx() }
+  val scrollTolerancePx = with(density) { 18.dp.toPx() }
+  val boundaryPullThresholdPx = with(density) { 52.dp.toPx() }
 
   val boundaryGestureState = remember(chapterId) {
     object {
@@ -2258,25 +2322,26 @@ private fun EpubScrollReader(
             }
           )
         }
-        .pointerInput(chapterId, totalChapters, coverImageBlock != null) {
+        .pointerInput(chapterId, chapter.index, totalChapters, coverImageBlock != null) {
           awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             if (latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
             val isCoverStage = coverImageBlock != null
             val hasLayout = isCoverStage || listState.layoutInfo.visibleItemsInfo.isNotEmpty()
-            val startedScrollInProgress = !isCoverStage && listState.isScrollInProgress
             val startedAtTop = isCoverStage || !listState.canScrollBackward
             val startedAtBottom = isCoverStage || !listState.canScrollForward
+            // Allow boundary pulls even while Android's edge stretch animation is relaxing at top/bottom.
+            val startedMomentumScroll = !isCoverStage && listState.isScrollInProgress && !startedAtTop && !startedAtBottom
 
             boundaryGestureState.gestureHasLayout = hasLayout
-            boundaryGestureState.gestureStartedScrollInProgress = startedScrollInProgress
+            boundaryGestureState.gestureStartedScrollInProgress = startedMomentumScroll
             boundaryGestureState.gestureStartedAtTop = startedAtTop
             boundaryGestureState.gestureStartedAtBottom = startedAtBottom
             boundaryGestureState.totalConsumedInGesture = 0f
             boundaryGestureState.overscrollAccumulatedY = 0f
             boundaryGestureState.gestureScrolledInsideList = false
 
-            if (!hasLayout || startedScrollInProgress || (!startedAtTop && !startedAtBottom)) {
+            if (!hasLayout || startedMomentumScroll || (!startedAtTop && !startedAtBottom)) {
               return@awaitEachGesture
             }
 
@@ -2298,10 +2363,16 @@ private fun EpubScrollReader(
 
             val dx = lastPos.x - startPos.x
             val dy = lastPos.y - startPos.y
-            val effectiveOverscrollY = if (isCoverStage) dy else boundaryGestureState.overscrollAccumulatedY
+            val rawOverscrollY = boundaryGestureState.overscrollAccumulatedY
+            val isNonScrollableShortChapter = !isCoverStage && !listState.canScrollBackward && !listState.canScrollForward
+            val effectiveOverscrollY = when {
+              isCoverStage || isNonScrollableShortChapter -> dy
+              abs(rawOverscrollY) > 0f -> rawOverscrollY + sign(rawOverscrollY) * viewConfiguration.touchSlop
+              else -> 0f
+            }
 
             when (
-              resolveEpubVerticalBoundaryScroll(
+              resolveEpubVerticalOrHorizontalBoundaryAction(
                 startedAtTop = startedAtTop,
                 startedAtBottom = startedAtBottom,
                 stillAtTop = isCoverStage || !listState.canScrollBackward,
@@ -2312,7 +2383,7 @@ private fun EpubScrollReader(
                 dy = dy,
                 swipeThresholdPx = boundaryPullThresholdPx,
                 gestureScrolledInsideList = !isCoverStage && boundaryGestureState.gestureScrolledInsideList,
-                gestureStartedScrollInProgress = startedScrollInProgress,
+                gestureStartedScrollInProgress = startedMomentumScroll,
                 overscrollAccumulatedY = effectiveOverscrollY
               )
             ) {
