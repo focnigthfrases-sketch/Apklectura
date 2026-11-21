@@ -129,6 +129,7 @@ class ReaderViewModel(
   private var readingTimerJob: Job? = null
   private var sleepTimerJob: Job? = null
   private var chapterSwitchJob: Job? = null
+  private var prefetchJob: Job? = null
   private val chapterSubOffsets = mutableMapOf<Int, Int>()
   private val horizontalChapterPositions = mutableMapOf<String, EpubHorizontalPosition>()
   private val horizontalPositionsByChapterFlow = MutableStateFlow<Map<String, EpubHorizontalPosition>>(emptyMap())
@@ -326,6 +327,7 @@ class ReaderViewModel(
             )
             loadChapterIntoTts(activeChapter)
             saveProgressInternal(book, safeUnit, safeSub, session.chapterStubs.size)
+            prefetchAdjacentChapters(safeUnit, session.chapterStubs.size)
           }
           BookFormat.PDF -> {
             val session = PdfBookSession(file, appContext)
@@ -473,8 +475,9 @@ class ReaderViewModel(
       is ReaderContentState.EpubReady -> {
         val safeIdx = targetUnit.coerceIn(0, (content.chapterStubs.size - 1).coerceAtLeast(0))
         chapterSwitchJob?.cancel()
+        val cachedChapter = epubSession?.getCachedChapter(safeIdx)
         chapterSwitchJob = viewModelScope.launch {
-          val chapter = withContext(Dispatchers.IO) {
+          val chapter = cachedChapter ?: withContext(Dispatchers.IO) {
             epubSession?.getChapter(safeIdx)
           } ?: return@launch
           val latestContent = contentStateFlow.value as? ReaderContentState.EpubReady ?: content
@@ -536,6 +539,7 @@ class ReaderViewModel(
             openAtEnd = openAtEnd
           )
           loadChapterIntoTts(chapter)
+          prefetchAdjacentChapters(safeIdx, latestContent.chapterStubs.size)
           val totalUnits = latestContent.chapterStubs.size.coerceAtLeast(1)
           val prog = ((safeIdx + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
           val book = uiState.value.book ?: return@launch
@@ -898,9 +902,24 @@ class ReaderViewModel(
     }
   }
 
+  private fun prefetchAdjacentChapters(centerIndex: Int, totalChapters: Int) {
+    val session = epubSession ?: return
+    if (totalChapters <= 1) return
+    prefetchJob?.cancel()
+    prefetchJob = viewModelScope.launch(Dispatchers.IO) {
+      val neighbors = listOf(centerIndex - 1, centerIndex + 1)
+        .filter { it in 0 until totalChapters && session.getCachedChapter(it) == null }
+      neighbors.forEach { idx ->
+        runCatching { session.getChapter(idx) }
+      }
+    }
+  }
+
   override fun onCleared() {
     readingTimerJob?.cancel()
     sleepTimerJob?.cancel()
+    prefetchJob?.cancel()
+    chapterSwitchJob?.cancel()
     ttsController.shutdown()
     epubSession?.close()
     pdfSession?.close()

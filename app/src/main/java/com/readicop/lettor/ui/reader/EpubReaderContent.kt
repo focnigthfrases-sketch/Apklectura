@@ -340,6 +340,46 @@ internal fun findVerticalEpubCoverImageBlock(
   return if (matchesCoverMeta || isCoverChapter) singleImage else null
 }
 
+private val HORIZONTAL_COVER_PATH_KEYWORDS = listOf(
+  "cover",
+  "portada",
+  "cubierta",
+  "titlepage",
+  "title-page",
+  "title_page",
+  "frontcover",
+  "jacket"
+)
+
+internal fun findHorizontalEpubCoverImageBlock(
+  chapter: EpubChapter,
+  metadata: EpubMetadata
+): EpubBlock.Image? {
+  val imageBlocks = chapter.blocks.filterIsInstance<EpubBlock.Image>()
+  if (imageBlocks.size != 1) return null
+  val hasVisibleText = chapter.blocks.any { block ->
+    when (block) {
+      is EpubBlock.Heading -> block.text.hasReadableCoverGapText()
+      is EpubBlock.Paragraph -> block.plainText.hasReadableCoverGapText()
+      is EpubBlock.Quote -> block.plainText.hasReadableCoverGapText()
+      is EpubBlock.Image -> false
+    }
+  }
+  if (hasVisibleText) return null
+
+  val singleImage = imageBlocks.first()
+  val matchesCoverMeta = !metadata.coverZipPath.isNullOrBlank() &&
+    singleImage.zipEntryPath.equals(metadata.coverZipPath, ignoreCase = true)
+  val isCoverChapter = chapter.index == 0 ||
+    HORIZONTAL_COVER_PATH_KEYWORDS.any { keyword ->
+      chapter.title.contains(keyword, ignoreCase = true) ||
+        chapter.zipPath.contains(keyword, ignoreCase = true) ||
+        singleImage.zipEntryPath.contains(keyword, ignoreCase = true)
+    }
+
+  return if (matchesCoverMeta || isCoverChapter) singleImage else null
+}
+
 internal fun computeFittedCoverDimensions(
   imageWidthPx: Int,
   imageHeightPx: Int,
@@ -969,6 +1009,7 @@ fun EpubReaderContent(
   } else {
     key(activeChapter.index, activeChapterKey) {
       EpubPaginatedReader(
+        metadata = metadata,
         chapterStubs = chapterStubs,
         chapter = activeChapter,
         initialSubPage = initialSubPage,
@@ -1004,6 +1045,7 @@ fun EpubReaderContent(
 
 @Composable
 private fun EpubPaginatedReader(
+  metadata: EpubMetadata,
   chapterStubs: List<EpubChapterStub>,
   chapter: EpubChapter,
   initialSubPage: Int,
@@ -1118,20 +1160,34 @@ private fun EpubPaginatedReader(
       readerFont = preferences.readerFont,
       horizontalPaddingDp = preferences.horizontalPaddingDp
     )
-    val pages = remember(chapter.index, chapter.blocks, layoutKey) {
-      pagesCache.getOrCompute(chapter.index, layoutKey) {
-        paginateChapterBlocks(
-          blocks = chapter.blocks,
-          textMeasurer = textMeasurer,
-          bodyStyle = bodyStyle,
-          quoteStyle = quoteStyle,
-          maxWidthPx = availableWidthPx,
-          maxHeightPx = availableHeightPx,
-          quoteWidthPx = (availableWidthPx - quoteIndentPx).coerceAtLeast(120),
-          paragraphGapPx = paragraphGapPx,
-          imageHeightPx = imageHeightPx,
-          density = density
+    val coverImageBlock = remember(chapter.index, chapter.blocks, metadata.coverZipPath) {
+      findHorizontalEpubCoverImageBlock(chapter, metadata)
+    }
+    val coverBlockIdx = remember(coverImageBlock, chapter.blocks) {
+      if (coverImageBlock != null) chapter.blocks.indexOf(coverImageBlock).coerceAtLeast(0) else -1
+    }
+    val pages = remember(chapter.index, chapter.blocks, layoutKey, coverImageBlock) {
+      if (coverImageBlock != null) {
+        listOf(
+          EpubRenderedPage(
+            listOf(PageSliceItem.ImageSlice(coverBlockIdx.coerceAtLeast(0), coverImageBlock.zipEntryPath))
+          )
         )
+      } else {
+        pagesCache.getOrCompute(chapter.index, layoutKey) {
+          paginateChapterBlocks(
+            blocks = chapter.blocks,
+            textMeasurer = textMeasurer,
+            bodyStyle = bodyStyle,
+            quoteStyle = quoteStyle,
+            maxWidthPx = availableWidthPx,
+            maxHeightPx = availableHeightPx,
+            quoteWidthPx = (availableWidthPx - quoteIndentPx).coerceAtLeast(120),
+            paragraphGapPx = paragraphGapPx,
+            imageHeightPx = imageHeightPx,
+            density = density
+          )
+        }
       }
     }
 
@@ -1286,7 +1342,7 @@ private fun EpubPaginatedReader(
         .fillMaxSize()
         .windowInsetsPadding(contentInsets)
         .pointerInput(chapterId, chapter.index, safePageCount, totalChapters) {
-          val swipeThresholdPx = 44.dp.toPx()
+          val swipeThresholdPx = 24.dp.toPx()
           awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             if (latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
@@ -1301,22 +1357,13 @@ private fun EpubPaginatedReader(
             val startPos = down.position
             var multiTouch = false
             var lastPos = startPos
+            var triggeredAction = EpubBoundaryAction.NONE
 
-            while (true) {
-              val event = awaitPointerEvent(PointerEventPass.Initial)
-              if (event.changes.count { it.pressed } > 1) {
-                multiTouch = true
-              }
-              val change = event.changes.firstOrNull { it.id == down.id } ?: break
-              lastPos = change.position
-              if (!change.pressed) break
-            }
-
-            if (multiTouch || latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
-            val stillOnStartPage = pagerState.currentPage == startedPage &&
-              abs(pagerState.currentPageOffsetFraction) < 0.08f
-            when (
-              resolveEpubBoundarySwipe(
+            fun evaluateAction(): EpubBoundaryAction {
+              if (multiTouch || latestSelection != null || chapterSwitchRequested) return EpubBoundaryAction.NONE
+              val stillOnStartPage = pagerState.currentPage == startedPage &&
+                abs(pagerState.currentPageOffsetFraction) < 0.08f
+              return resolveEpubBoundarySwipe(
                 startedOnFirstPage = startedOnFirstPage,
                 startedOnLastPage = startedOnLastPage,
                 chapterIndex = chapter.index,
@@ -1327,7 +1374,30 @@ private fun EpubPaginatedReader(
                 pagerSettledOnStartPage = stillOnStartPage,
                 pagerScrollInProgress = false
               )
-            ) {
+            }
+
+            while (true) {
+              val event = awaitPointerEvent(PointerEventPass.Initial)
+              if (event.changes.count { it.pressed } > 1) {
+                multiTouch = true
+              }
+              val change = event.changes.firstOrNull { it.id == down.id } ?: break
+              lastPos = change.position
+              if (!multiTouch && abs(lastPos.x - startPos.x) >= swipeThresholdPx) {
+                val immediate = evaluateAction()
+                if (immediate != EpubBoundaryAction.NONE) {
+                  triggeredAction = immediate
+                  break
+                }
+              }
+              if (!change.pressed) break
+            }
+
+            if (triggeredAction == EpubBoundaryAction.NONE) {
+              triggeredAction = evaluateAction()
+            }
+
+            when (triggeredAction) {
               EpubBoundaryAction.NEXT_CHAPTER -> {
                 chapterSwitchRequested = true
                 val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
@@ -1424,12 +1494,44 @@ private fun EpubPaginatedReader(
                   onTap = { offset -> latestHandlePageTap(offset.x) }
                 )
               }
-              .padding(horizontal = horizontalPad, vertical = 6.dp)
+              .padding(horizontal = horizontalPad, vertical = 6.dp),
+            contentAlignment = if (coverImageBlock != null) Alignment.Center else Alignment.TopStart
           ) {
-            Column(
-              modifier = Modifier.fillMaxSize(),
-              verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
+            if (coverImageBlock != null) {
+              LaunchedEffect(coverImageBlock.zipEntryPath) {
+                onRequestImage(coverImageBlock.zipEntryPath)
+              }
+              val bmp = imageCache[coverImageBlock.zipEntryPath]
+              BoxWithConstraints(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .padding(vertical = 14.dp)
+                  .testTag("epub_horizontal_cover_container"),
+                contentAlignment = Alignment.Center
+              ) {
+                if (bmp != null) {
+                  val (targetW, targetH) = computeFittedCoverDimensions(
+                    imageWidthPx = bmp.width,
+                    imageHeightPx = bmp.height,
+                    maxWidthDp = maxWidth.value,
+                    maxHeightDp = maxHeight.value
+                  )
+                  Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = coverImageBlock.alt.ifBlank { "Portada del libro" },
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                      .size(width = targetW.dp, height = targetH.dp)
+                      .clip(RoundedCornerShape(10.dp))
+                      .testTag("epub_horizontal_cover_image")
+                  )
+                }
+              }
+            } else {
+              Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+              ) {
               page.items.forEach { item ->
                 val blockHighlights = remember(chapterHighlights, item.blockIndex) {
                   chapterHighlights.filter { hl ->
@@ -1592,8 +1694,8 @@ private fun EpubPaginatedReader(
                   }
                 }
               }
-
             }
+          }
           }
         }
       }
@@ -2246,7 +2348,7 @@ private fun EpubScrollReader(
   )
 
   val scrollTolerancePx = with(density) { 18.dp.toPx() }
-  val boundaryPullThresholdPx = with(density) { 52.dp.toPx() }
+  val boundaryPullThresholdPx = with(density) { 28.dp.toPx() }
 
   val boundaryGestureState = remember(chapterId) {
     object {
@@ -2348,31 +2450,24 @@ private fun EpubScrollReader(
             val startPos = down.position
             var multiTouch = false
             var lastPos = startPos
+            var triggeredAction = EpubBoundaryAction.NONE
 
-            while (true) {
-              val event = awaitPointerEvent(PointerEventPass.Final)
-              if (event.changes.count { it.pressed } > 1) {
-                multiTouch = true
+            fun evaluateAction(): EpubBoundaryAction {
+              if (multiTouch || latestSelection != null || chapterSwitchRequested) return EpubBoundaryAction.NONE
+              val dx = lastPos.x - startPos.x
+              val dy = lastPos.y - startPos.y
+              val rawOverscrollY = boundaryGestureState.overscrollAccumulatedY
+              val isNonScrollableShortChapter = !isCoverStage && !listState.canScrollBackward && !listState.canScrollForward
+              val atPinnedVerticalLimit = !boundaryGestureState.gestureScrolledInsideList &&
+                ((dy < 0f && startedAtBottom && !listState.canScrollForward) ||
+                  (dy > 0f && startedAtTop && !listState.canScrollBackward))
+              val effectiveOverscrollY = when {
+                isCoverStage || isNonScrollableShortChapter -> dy
+                abs(rawOverscrollY) > 0f -> rawOverscrollY + sign(rawOverscrollY) * viewConfiguration.touchSlop
+                atPinnedVerticalLimit -> dy
+                else -> 0f
               }
-              val change = event.changes.firstOrNull { it.id == down.id } ?: break
-              lastPos = change.position
-              if (!change.pressed) break
-            }
-
-            if (multiTouch || latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
-
-            val dx = lastPos.x - startPos.x
-            val dy = lastPos.y - startPos.y
-            val rawOverscrollY = boundaryGestureState.overscrollAccumulatedY
-            val isNonScrollableShortChapter = !isCoverStage && !listState.canScrollBackward && !listState.canScrollForward
-            val effectiveOverscrollY = when {
-              isCoverStage || isNonScrollableShortChapter -> dy
-              abs(rawOverscrollY) > 0f -> rawOverscrollY + sign(rawOverscrollY) * viewConfiguration.touchSlop
-              else -> 0f
-            }
-
-            when (
-              resolveEpubVerticalOrHorizontalBoundaryAction(
+              return resolveEpubVerticalOrHorizontalBoundaryAction(
                 startedAtTop = startedAtTop,
                 startedAtBottom = startedAtBottom,
                 stillAtTop = isCoverStage || !listState.canScrollBackward,
@@ -2386,7 +2481,33 @@ private fun EpubScrollReader(
                 gestureStartedScrollInProgress = startedMomentumScroll,
                 overscrollAccumulatedY = effectiveOverscrollY
               )
-            ) {
+            }
+
+            while (true) {
+              val event = awaitPointerEvent(PointerEventPass.Final)
+              if (event.changes.count { it.pressed } > 1) {
+                multiTouch = true
+              }
+              val change = event.changes.firstOrNull { it.id == down.id } ?: break
+              lastPos = change.position
+              if (!multiTouch &&
+                (abs(lastPos.x - startPos.x) >= boundaryPullThresholdPx ||
+                  abs(lastPos.y - startPos.y) >= boundaryPullThresholdPx)
+              ) {
+                val immediate = evaluateAction()
+                if (immediate != EpubBoundaryAction.NONE) {
+                  triggeredAction = immediate
+                  break
+                }
+              }
+              if (!change.pressed) break
+            }
+
+            if (triggeredAction == EpubBoundaryAction.NONE) {
+              triggeredAction = evaluateAction()
+            }
+
+            when (triggeredAction) {
               EpubBoundaryAction.NEXT_CHAPTER -> {
                 chapterSwitchRequested = true
                 if (coverImageBlock == null &&

@@ -62,14 +62,18 @@ data class EpubSearchHit(
  */
 class LazyEpubSession(val file: File) : Closeable {
   private var zipFile: ZipFile? = null
-  private val chapterCache = LruCache<Int, EpubChapter>(8)
+  private val chapterCache = LruCache<Int, EpubChapter>(12)
+  @Volatile
+  private var isClosed = false
 
   lateinit var metadata: EpubMetadata
     private set
   lateinit var chapterStubs: List<EpubChapterStub>
     private set
 
+  @Synchronized
   fun open(): LazyEpubSession {
+    isClosed = false
     val zip = ZipFile(file)
     zipFile = zip
     val (meta, stubs) = EpubParser.readIndex(zip, file.nameWithoutExtension)
@@ -78,6 +82,14 @@ class LazyEpubSession(val file: File) : Closeable {
     return this
   }
 
+  @Synchronized
+  fun getCachedChapter(index: Int): EpubChapter? {
+    if (isClosed || !::chapterStubs.isInitialized || chapterStubs.isEmpty()) return null
+    val safeIndex = index.coerceIn(0, (chapterStubs.size - 1).coerceAtLeast(0))
+    return chapterCache.get(safeIndex)
+  }
+
+  @Synchronized
   fun getChapter(index: Int): EpubChapter {
     val safeIndex = index.coerceIn(0, (chapterStubs.size - 1).coerceAtLeast(0))
     chapterCache.get(safeIndex)?.let { return it }
@@ -88,6 +100,7 @@ class LazyEpubSession(val file: File) : Closeable {
     return parsed
   }
 
+  @Synchronized
   fun searchAllChapters(query: String): List<EpubSearchHit> {
     val trimmed = query.trim()
     if (trimmed.isBlank()) return emptyList()
@@ -107,12 +120,15 @@ class LazyEpubSession(val file: File) : Closeable {
     return hits
   }
 
+  @Synchronized
   fun toEpubDocumentForQuery(maxChapters: Int = 60): EpubDocument {
     val chapters = chapterStubs.take(maxChapters).map { getChapter(it.index) }
     return EpubDocument(metadata = metadata, chapters = chapters)
   }
 
+  @Synchronized
   override fun close() {
+    isClosed = true
     chapterCache.evictAll()
     runCatching { zipFile?.close() }
     zipFile = null
@@ -386,10 +402,25 @@ object EpubParser {
     val ncxItem = (spineTocId?.let { manifest[it] })
       ?: manifest.values.firstOrNull { it.mediaType.contains("dtbncx", ignoreCase = true) }
 
-    val coverItem = (coverMetaId?.let { manifest[it] })
-      ?: manifest.values.firstOrNull { it.properties.contains("cover-image", ignoreCase = true) }
+    val coverItem = (coverMetaId?.let { metaId ->
+      manifest[metaId] ?: manifest.values.firstOrNull { item ->
+        item.mediaType.startsWith("image/") && (
+          item.href.equals(metaId, ignoreCase = true) ||
+            resolveZipPath(baseDir, item.href).equals(metaId, ignoreCase = true)
+          )
+      }
+    })
+      ?: manifest.values.firstOrNull {
+        it.properties.split(Regex("\\s+")).any { prop -> prop.equals("cover-image", ignoreCase = true) }
+      }
       ?: manifest.values.firstOrNull {
         it.id.contains("cover", ignoreCase = true) && it.mediaType.startsWith("image/")
+      }
+      ?: manifest.values.firstOrNull {
+        (it.href.contains("cover", ignoreCase = true) ||
+          it.href.contains("portada", ignoreCase = true) ||
+          it.href.contains("cubierta", ignoreCase = true)) &&
+          it.mediaType.startsWith("image/")
       }
 
     return ParsedOpf(
@@ -476,7 +507,8 @@ object EpubParser {
       .find(rawHtml)
     var content = bodyMatch?.groupValues?.get(1) ?: rawHtml
     content = content
-      .replace(Regex("""<(script|style|head)\b[^>]*>.*?</\1>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "")
+      .replace(Regex("""<!--.*?-->""", setOf(RegexOption.DOT_MATCHES_ALL)), "")
+      .replace(Regex("""<(script|style|head|title|desc)\b[^>]*>.*?</\1>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "")
 
     val blocks = mutableListOf<EpubBlock>()
 

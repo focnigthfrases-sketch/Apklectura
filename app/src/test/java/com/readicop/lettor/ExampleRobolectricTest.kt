@@ -49,8 +49,10 @@ class ExampleRobolectricTest {
       assertEquals("Miguel de Cervantes Saavedra", session.metadata.author)
       assertEquals(4, session.chapterStubs.size)
 
+      assertEquals(null, session.getCachedChapter(1))
       val ch1 = session.getChapter(1)
       assertTrue(ch1.plainText.contains("En un lugar de la Mancha"))
+      assertTrue(session.getCachedChapter(1) === ch1)
 
       val hits = session.searchAllChapters("molinos")
       assertTrue(hits.isNotEmpty())
@@ -1164,6 +1166,168 @@ class ExampleRobolectricTest {
     assertEquals(360f, wWide, 0.01f)
     assertEquals(225f, hWide, 0.01f)
     assertEquals(1.6f, wWide / hWide, 0.001f)
+  }
+
+  @Test
+  fun `horizontal epub cover detector handles varied cover structures across books and skips non-cover pages`() {
+    val meta = com.readicop.lettor.domain.engine.EpubMetadata(
+      title = "La Regenta",
+      author = "Clarín",
+      genre = "Clásicos",
+      description = "",
+      chapterCount = 4,
+      coverZipPath = "OEBPS/Images/0001.jpg"
+    )
+    val frontCoverImg = com.readicop.lettor.domain.engine.EpubBlock.Image("OEBPS/Images/0001.jpg")
+    val frontCoverChapter0 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 0,
+      title = "Capítulo 1",
+      zipPath = "OEBPS/Text/p001.xhtml",
+      blocks = listOf(frontCoverImg),
+      plainText = ""
+    )
+    assertEquals(
+      frontCoverImg,
+      com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(frontCoverChapter0, meta)
+    )
+
+    val titlepageBlock = com.readicop.lettor.domain.engine.EpubBlock.Image("OEBPS/Images/front.png")
+    val titlepageChapter = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 1,
+      title = "Title Page",
+      zipPath = "OEBPS/Text/titlepage.xhtml",
+      blocks = listOf(titlepageBlock),
+      plainText = ""
+    )
+    assertEquals(
+      titlepageBlock,
+      com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(titlepageChapter, meta)
+    )
+
+    val metaMatchAtIndex1 = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 1,
+      title = "Frontispicio",
+      zipPath = "OEBPS/Text/front.xhtml",
+      blocks = listOf(frontCoverImg),
+      plainText = ""
+    )
+    assertEquals(
+      frontCoverImg,
+      com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(metaMatchAtIndex1, meta)
+    )
+
+    val nonCoverIllustrationChapter = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 4,
+      title = "Ilustración",
+      zipPath = "OEBPS/Text/ill4.xhtml",
+      blocks = listOf(com.readicop.lettor.domain.engine.EpubBlock.Image("OEBPS/Images/plate4.jpg")),
+      plainText = ""
+    )
+    assertEquals(
+      null,
+      com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(nonCoverIllustrationChapter, meta)
+    )
+
+    val proseWithImageChapter = com.readicop.lettor.domain.engine.EpubChapter(
+      index = 0,
+      title = "Portada",
+      zipPath = "OEBPS/Text/cover.xhtml",
+      blocks = listOf(
+        frontCoverImg,
+        com.readicop.lettor.domain.engine.EpubBlock.Paragraph(
+          androidx.compose.ui.text.AnnotatedString("Texto introductorio."),
+          "Texto introductorio."
+        )
+      ),
+      plainText = "Texto introductorio."
+    )
+    assertEquals(
+      null,
+      com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(proseWithImageChapter, meta)
+    )
+  }
+
+  @Test
+  fun `svg wrapped epub cover with title and desc parses cleanly without spurious text blocks`() {
+    val tempEpub = File.createTempFile("svg_cover_book", ".epub")
+    try {
+      java.util.zip.ZipOutputStream(tempEpub.outputStream()).use { zip ->
+        zip.putNextEntry(java.util.zip.ZipEntry("META-INF/container.xml"))
+        zip.write(
+          """
+          <?xml version="1.0"?>
+          <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+            <rootfiles>
+              <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+            </rootfiles>
+          </container>
+          """.trimIndent().toByteArray()
+        )
+        zip.closeEntry()
+
+        zip.putNextEntry(java.util.zip.ZipEntry("OEBPS/content.opf"))
+        zip.write(
+          """
+          <?xml version="1.0" encoding="utf-8"?>
+          <package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+            <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+              <dc:title>Libro SVG</dc:title>
+              <dc:creator>Autor</dc:creator>
+              <meta name="cover" content="Images/portada.png"/>
+            </metadata>
+            <manifest>
+              <item id="img_cover" href="Images/portada.png" media-type="image/png"/>
+              <item id="titlepage" href="Text/titlepage.xhtml" media-type="application/xhtml+xml"/>
+              <item id="ch1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
+            </manifest>
+            <spine>
+              <itemref idref="titlepage"/>
+              <itemref idref="ch1"/>
+            </spine>
+          </package>
+          """.trimIndent().toByteArray()
+        )
+        zip.closeEntry()
+
+        zip.putNextEntry(java.util.zip.ZipEntry("OEBPS/Text/titlepage.xhtml"))
+        zip.write(
+          """
+          <?xml version="1.0" encoding="utf-8"?>
+          <html xmlns="http://www.w3.org/1999/xhtml">
+            <head><title>Cover</title></head>
+            <body>
+              <div>
+                <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900">
+                  <title>Cover Image</title>
+                  <desc>Cubierta del libro</desc>
+                  <image width="600" height="900" xlink:href="../Images/portada.png"/>
+                </svg>
+              </div>
+            </body>
+          </html>
+          """.trimIndent().toByteArray()
+        )
+        zip.closeEntry()
+
+        zip.putNextEntry(java.util.zip.ZipEntry("OEBPS/Text/ch1.xhtml"))
+        zip.write("<html><body><p>Primer capítulo.</p></body></html>".toByteArray())
+        zip.closeEntry()
+
+        zip.putNextEntry(java.util.zip.ZipEntry("OEBPS/Images/portada.png"))
+        zip.write(byteArrayOf(1, 2, 3, 4))
+        zip.closeEntry()
+      }
+
+      val doc = com.readicop.lettor.domain.engine.EpubParser.parseDocument(tempEpub)
+      assertEquals("OEBPS/Images/portada.png", doc.metadata.coverZipPath)
+      val detected = com.readicop.lettor.ui.reader.findHorizontalEpubCoverImageBlock(
+        doc.chapters.first(),
+        doc.metadata
+      )
+      assertEquals("OEBPS/Images/portada.png", detected?.zipEntryPath)
+    } finally {
+      tempEpub.delete()
+    }
   }
 
   @Test
