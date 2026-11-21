@@ -394,6 +394,7 @@ fun ReaderScreen(
           metadata = content.metadata,
           chapterStubs = content.chapterStubs,
           activeChapter = content.activeChapter,
+          openAtEnd = content.openAtEnd,
           initialSubPage = uiState.currentSubOffset,
           initialHorizontalPosition = uiState.horizontalChapterPositions[activeChapterId],
           initialVerticalPosition = uiState.verticalChapterPositions[activeChapterId],
@@ -426,6 +427,7 @@ fun ReaderScreen(
           onHorizontalPositionChanged = viewModel::onHorizontalPositionChanged,
           onVerticalPositionChanged = viewModel::onVerticalPositionChanged,
           onSelectChapter = viewModel::jumpToUnit,
+          onSelectChapterBoundary = viewModel::jumpToChapterAtBoundary,
           onVisibleBlockChanged = { blockIdx ->
             currentVisibleBlockIndex = blockIdx
           },

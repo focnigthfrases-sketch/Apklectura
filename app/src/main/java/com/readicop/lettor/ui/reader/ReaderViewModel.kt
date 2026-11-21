@@ -60,7 +60,8 @@ sealed interface ReaderContentState {
   data class EpubReady(
     val metadata: EpubMetadata,
     val chapterStubs: List<EpubChapterStub>,
-    val activeChapter: EpubChapter
+    val activeChapter: EpubChapter,
+    val openAtEnd: Boolean = false
   ) : ReaderContentState
   data class PdfReady(
     val pageCount: Int,
@@ -395,6 +396,9 @@ class ReaderViewModel(
     if (content.activeChapter.index != chapter.index) {
       return
     }
+    if (content.openAtEnd) {
+      contentStateFlow.value = content.copy(openAtEnd = false)
+    }
     val totalUnits = content.chapterStubs.size.coerceAtLeast(1)
     currentUnitFlow.value = chapter.index
     currentSubOffsetFlow.value = safeSub
@@ -436,6 +440,9 @@ class ReaderViewModel(
     if (content.activeChapter.index != chapter.index) {
       return
     }
+    if (content.openAtEnd) {
+      contentStateFlow.value = content.copy(openAtEnd = false)
+    }
     val totalUnits = content.chapterStubs.size.coerceAtLeast(1)
     currentUnitFlow.value = chapter.index
     currentSubOffsetFlow.value = normalized.blockIndex.coerceAtLeast(0)
@@ -451,9 +458,16 @@ class ReaderViewModel(
     }
   }
 
-  fun jumpToUnit(targetUnit: Int) = jumpToUnitInternal(targetUnit, resetSubOffset = false)
+  fun jumpToUnit(targetUnit: Int) = jumpToUnitInternal(targetUnit, resetSubOffset = false, openAtEnd = false)
 
-  private fun jumpToUnitInternal(targetUnit: Int, resetSubOffset: Boolean) {
+  fun jumpToChapterAtBoundary(targetUnit: Int, openAtEnd: Boolean) =
+    jumpToUnitInternal(targetUnit, resetSubOffset = !openAtEnd, openAtEnd = openAtEnd)
+
+  private fun jumpToUnitInternal(
+    targetUnit: Int,
+    resetSubOffset: Boolean,
+    openAtEnd: Boolean = false
+  ) {
     val content = contentStateFlow.value
     when (content) {
       is ReaderContentState.EpubReady -> {
@@ -467,7 +481,7 @@ class ReaderViewModel(
           val chId = epubChapterUniqueId(chapter, latestContent.chapterStubs)
           val isScrollMode = uiState.value.preferences.epubScrollMode
 
-          if (resetSubOffset) {
+          if (resetSubOffset || openAtEnd) {
             chapterSubOffsets.remove(safeIdx)
             horizontalChapterPositions.remove(chId)
             verticalChapterPositions.remove(chId)
@@ -502,7 +516,7 @@ class ReaderViewModel(
             }
           }
 
-          val restoredSub = if (resetSubOffset) {
+          val restoredSub = if (resetSubOffset || openAtEnd) {
             0
           } else if (!isScrollMode) {
             (horizontalChapterPositions[chId]?.subPage ?: chapterSubOffsets[safeIdx] ?: 0).coerceAtLeast(0)
@@ -510,14 +524,17 @@ class ReaderViewModel(
             verticalChapterPositions[chId]?.blockIndex?.coerceAtLeast(0) ?: 0
           }
 
-          if (!isScrollMode && !resetSubOffset) {
+          if (!isScrollMode && !resetSubOffset && !openAtEnd) {
             chapterSubOffsets[safeIdx] = restoredSub
           }
           horizontalPositionsByChapterFlow.value = horizontalChapterPositions.toMap()
           verticalPositionsByChapterFlow.value = verticalChapterPositions.toMap()
           currentSubOffsetFlow.value = restoredSub
           currentUnitFlow.value = safeIdx
-          contentStateFlow.value = latestContent.copy(activeChapter = chapter)
+          contentStateFlow.value = latestContent.copy(
+            activeChapter = chapter,
+            openAtEnd = openAtEnd
+          )
           loadChapterIntoTts(chapter)
           val totalUnits = latestContent.chapterStubs.size.coerceAtLeast(1)
           val prog = ((safeIdx + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)

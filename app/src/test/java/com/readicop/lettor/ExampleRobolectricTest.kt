@@ -1693,4 +1693,192 @@ class ExampleRobolectricTest {
       tempEpub.delete()
     }
   }
+
+  @Test
+  fun `backward chapter boundary jumps open unvisited and visited chapters at end in both horizontal and vertical modes`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempEpub = copySampleEpub(context)
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(
+      context,
+      com.readicop.lettor.data.local.LettorDatabase::class.java
+    ).allowMainThreadQueries().build()
+
+    try {
+      val prefsRepo = com.readicop.lettor.data.preferences.ReaderPreferencesRepository(context)
+      kotlinx.coroutines.runBlocking {
+        prefsRepo.setEpubScrollMode(false)
+      }
+      val repo = com.readicop.lettor.data.repository.LibraryRepository(
+        appContext = context,
+        bookDao = db.bookDao(),
+        bookmarkDao = db.bookmarkDao(),
+        highlightDao = db.highlightDao(),
+        vocabularyDao = db.vocabularyDao(),
+        importer = com.readicop.lettor.domain.engine.BookImporter(context),
+        backupManager = com.readicop.lettor.domain.engine.BackupManager(
+          context = context,
+          bookDao = db.bookDao(),
+          bookmarkDao = db.bookmarkDao(),
+          highlightDao = db.highlightDao(),
+          vocabularyDao = db.vocabularyDao()
+        ),
+        preferencesRepository = prefsRepo
+      )
+
+      val bookId = kotlinx.coroutines.runBlocking {
+        db.bookDao().insertBook(
+          com.readicop.lettor.data.local.BookEntity(
+            title = "Don Quijote",
+            author = "Cervantes",
+            format = com.readicop.lettor.data.local.BookFormat.EPUB,
+            filePath = tempEpub.absolutePath,
+            totalUnits = 4,
+            currentUnit = 0,
+            currentSubOffset = 0
+          )
+        )
+      }
+
+      runCatching {
+        androidx.work.WorkManager.initialize(
+          context,
+          androidx.work.Configuration.Builder().build()
+        )
+      }
+
+      val vm = com.readicop.lettor.ui.reader.ReaderViewModel(
+        appContext = context,
+        bookId = bookId,
+        initialUnit = -1,
+        repository = repo,
+        preferencesRepository = prefsRepo
+      )
+
+      var latestState = vm.uiState.value
+      val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+        vm.uiState.collect { latestState = it }
+      }
+
+      fun awaitState(
+        timeoutMs: Long = 5000L,
+        predicate: (com.readicop.lettor.ui.reader.ReaderUiState) -> Boolean
+      ): com.readicop.lettor.ui.reader.ReaderUiState {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+          org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+          val current = vm.uiState.value
+          latestState = current
+          if (predicate(current)) return current
+          Thread.sleep(15L)
+        }
+        throw AssertionError("Timed out waiting for ReaderUiState; last=$latestState")
+      }
+
+      try {
+        val loaded = awaitState {
+          it.contentState is com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        }
+        val stubs = (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).chapterStubs
+
+        // Save an early offset in chapter 1 first, then jump straight to last chapter (index 3) via TOC/slider
+        vm.onHorizontalPositionChanged(
+          (loaded.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).activeChapter,
+          com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+            chapterId = com.readicop.lettor.ui.reader.epubChapterUniqueId(0, stubs[0].zipPath, stubs),
+            chapterIndex = 0,
+            subPage = 1,
+            hasSemanticAnchor = true
+          ),
+          0.1f
+        )
+        vm.jumpToUnit(3)
+        val atLast = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 3
+        }
+        assertFalse((atLast.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).openAtEnd)
+
+        // Walk backward through unvisited chapters 2 and 1, then visited chapter 0:
+        // each boundary transition must open at end (openAtEnd = true) and clear openAtEnd once settled.
+        for (targetIdx in listOf(2, 1, 0)) {
+          vm.jumpToChapterAtBoundary(targetIdx, openAtEnd = true)
+          val arrived = awaitState {
+            val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+            c != null && c.activeChapter.index == targetIdx
+          }
+          val ready = arrived.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          assertTrue("Expected openAtEnd=true entering chapter $targetIdx backward", ready.openAtEnd)
+
+          val chId = com.readicop.lettor.ui.reader.epubChapterUniqueId(ready.activeChapter, stubs)
+          vm.onHorizontalPositionChanged(
+            ready.activeChapter,
+            com.readicop.lettor.ui.reader.EpubHorizontalPosition(
+              chapterId = chId,
+              chapterIndex = targetIdx,
+              subPage = 9,
+              anchorBlockIndex = 2,
+              anchorCharOffsetInBlock = 0,
+              chapterProgressFraction = 1f,
+              hasSemanticAnchor = true
+            ),
+            0.5f
+          )
+          val settled = awaitState {
+            val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+            c != null && !c.openAtEnd
+          }
+          assertEquals(9, settled.currentSubOffset)
+        }
+
+        // Now verify the same backward boundary behavior in Vertical scroll mode + forward reset
+        vm.setEpubScrollMode(true)
+        awaitState { it.preferences.epubScrollMode }
+
+        vm.jumpToUnit(3)
+        awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 3
+        }
+
+        vm.jumpToChapterAtBoundary(2, openAtEnd = true)
+        val verticalCh2 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 2
+        }
+        val verticalReady2 = verticalCh2.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+        assertTrue(verticalReady2.openAtEnd)
+
+        val ch2Id = com.readicop.lettor.ui.reader.epubChapterUniqueId(verticalReady2.activeChapter, stubs)
+        vm.onVerticalPositionChanged(
+          verticalReady2.activeChapter,
+          com.readicop.lettor.ui.reader.EpubVerticalScrollPosition(
+            chapterId = ch2Id,
+            chapterIndex = 2,
+            blockIndex = (verticalReady2.activeChapter.blocks.lastIndex).coerceAtLeast(0),
+            scrollOffsetPx = 420
+          ),
+          0.75f
+        )
+        awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && !c.openAtEnd
+        }
+
+        // Forward boundary jump to chapter 3 opens cleanly at start (subOffset = 0, openAtEnd = false)
+        vm.jumpToChapterAtBoundary(3, openAtEnd = false)
+        val forwardCh3 = awaitState {
+          val c = it.contentState as? com.readicop.lettor.ui.reader.ReaderContentState.EpubReady
+          c != null && c.activeChapter.index == 3
+        }
+        assertEquals(0, forwardCh3.currentSubOffset)
+        assertFalse((forwardCh3.contentState as com.readicop.lettor.ui.reader.ReaderContentState.EpubReady).openAtEnd)
+      } finally {
+        collectJob.cancel()
+        vm.onReaderStopped()
+      }
+    } finally {
+      db.close()
+      tempEpub.delete()
+    }
+  }
 }

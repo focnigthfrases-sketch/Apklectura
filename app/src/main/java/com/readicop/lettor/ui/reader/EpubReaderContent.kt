@@ -95,6 +95,7 @@ import com.readicop.lettor.ui.theme.fontFamily
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -827,6 +828,10 @@ fun EpubReaderContent(
     val prog = (nextIdx + 1).toFloat() / chapterStubs.size.coerceAtLeast(1)
     onPositionChanged(nextIdx, 0, prog)
   },
+  openAtEnd: Boolean = false,
+  onSelectChapterBoundary: (chapterIndex: Int, openAtEnd: Boolean) -> Unit = { nextIdx, _ ->
+    onSelectChapter(nextIdx)
+  },
   onVisibleBlockChanged: (Int) -> Unit = {},
   onActiveSelectionInfoChanged: (
     startBlockIndex: Int,
@@ -894,6 +899,7 @@ fun EpubReaderContent(
         chapterStubs = chapterStubs,
         chapter = activeChapter,
         initialVerticalPosition = initialVerticalPosition,
+        initialOpenAtEnd = openAtEnd,
         surfaceColors = surfaceColors,
         preferences = preferences,
         imageCache = imageCache,
@@ -911,9 +917,9 @@ fun EpubReaderContent(
         onCopyPlainText = onCopyPlainText,
         onShareSelection = onShareSelection,
         onVerticalPositionChanged = onVerticalPositionChanged,
-        onSelectChapter = { nextIdx ->
+        onSelectChapterBoundary = { nextIdx, openAtEndOnTarget ->
           activeSelection = null
-          onSelectChapter(nextIdx)
+          onSelectChapterBoundary(nextIdx, openAtEndOnTarget)
         },
         onVisibleBlockChanged = onVisibleBlockChanged,
         modifier = modifier
@@ -926,6 +932,7 @@ fun EpubReaderContent(
         chapter = activeChapter,
         initialSubPage = initialSubPage,
         initialHorizontalPosition = initialHorizontalPosition,
+        initialOpenAtEnd = openAtEnd,
         pagesCache = pagesCache,
         surfaceColors = surfaceColors,
         preferences = preferences,
@@ -943,9 +950,9 @@ fun EpubReaderContent(
         onShareSelection = onShareSelection,
         onPositionChanged = onPositionChanged,
         onHorizontalPositionChanged = onHorizontalPositionChanged,
-        onSelectChapter = { nextIdx ->
+        onSelectChapterBoundary = { nextIdx, openAtEndOnTarget ->
           activeSelection = null
-          onSelectChapter(nextIdx)
+          onSelectChapterBoundary(nextIdx, openAtEndOnTarget)
         },
         onVisibleBlockChanged = onVisibleBlockChanged,
         modifier = modifier
@@ -960,6 +967,7 @@ private fun EpubPaginatedReader(
   chapter: EpubChapter,
   initialSubPage: Int,
   initialHorizontalPosition: EpubHorizontalPosition?,
+  initialOpenAtEnd: Boolean,
   pagesCache: EpubPagesCache<EpubRenderedPage>,
   surfaceColors: ReaderSurfaceColors,
   preferences: ReaderPreferences,
@@ -987,7 +995,7 @@ private fun EpubPaginatedReader(
     position: EpubHorizontalPosition,
     overallProgress: Float
   ) -> Unit,
-  onSelectChapter: (chapterIndex: Int) -> Unit,
+  onSelectChapterBoundary: (chapterIndex: Int, openAtEnd: Boolean) -> Unit,
   onVisibleBlockChanged: (Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -1090,19 +1098,28 @@ private fun EpubPaginatedReader(
       epubChapterUniqueId(chapter, chapterStubs)
     }
     val safePageCount = pages.size.coerceAtLeast(1)
+    val openChapterAtEnd = remember(chapterId) { initialOpenAtEnd }
     val initialAnchor = remember(chapterId) {
-      initialHorizontalPosition ?: EpubHorizontalPosition(
-        chapterId = chapterId,
-        chapterIndex = chapter.index,
-        subPage = initialSubPage.coerceAtLeast(0)
-      )
+      if (openChapterAtEnd) {
+        null
+      } else {
+        initialHorizontalPosition ?: EpubHorizontalPosition(
+          chapterId = chapterId,
+          chapterIndex = chapter.index,
+          subPage = initialSubPage.coerceAtLeast(0)
+        )
+      }
     }
     val startPage = remember(chapterId) {
-      resolveHorizontalPageRestoreTarget(
-        saved = initialAnchor,
-        pages = pages,
-        currentLayoutKey = layoutKey
-      )
+      if (openChapterAtEnd) {
+        (safePageCount - 1).coerceAtLeast(0)
+      } else {
+        resolveHorizontalPageRestoreTarget(
+          saved = initialAnchor,
+          pages = pages,
+          currentLayoutKey = layoutKey
+        )
+      }
     }
     val pagerState = rememberPagerState(initialPage = startPage) { safePageCount }
     var lastAppliedLayoutKey by remember(chapterId) { mutableStateOf(layoutKey) }
@@ -1110,7 +1127,7 @@ private fun EpubPaginatedReader(
     var chapterSwitchRequested by remember(chapterId) { mutableStateOf(false) }
 
     val latestOnHorizontalPositionChanged by rememberUpdatedState(onHorizontalPositionChanged)
-    val latestOnSelectChapter by rememberUpdatedState(onSelectChapter)
+    val latestOnSelectChapterBoundary by rememberUpdatedState(onSelectChapterBoundary)
 
     fun buildPositionForPage(
       pageIndex: Int,
@@ -1256,7 +1273,7 @@ private fun EpubPaginatedReader(
           .widthIn(max = 680.dp)
           .fillMaxWidth()
           .pointerInput(chapterId, safePageCount, totalChapters) {
-            val swipeThresholdPx = 64.dp.toPx()
+            val swipeThresholdPx = 56.dp.toPx()
             awaitEachGesture {
               val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
               if (latestSelection != null || chapterSwitchRequested) return@awaitEachGesture
@@ -1300,13 +1317,13 @@ private fun EpubPaginatedReader(
                   chapterSwitchRequested = true
                   val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
                   latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                  latestOnSelectChapter(chapter.index + 1)
+                  latestOnSelectChapterBoundary(chapter.index + 1, false)
                 }
                 EpubBoundaryAction.PREVIOUS_CHAPTER -> {
                   chapterSwitchRequested = true
                   val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
                   latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                  latestOnSelectChapter(chapter.index - 1)
+                  latestOnSelectChapterBoundary(chapter.index - 1, true)
                 }
                 EpubBoundaryAction.NONE -> Unit
               }
@@ -1334,7 +1351,7 @@ private fun EpubPaginatedReader(
                     chapterSwitchRequested = true
                     val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
                     latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                    latestOnSelectChapter(chapter.index - 1)
+                    latestOnSelectChapterBoundary(chapter.index - 1, true)
                   }
                 }
                 xInPage > w * 0.78f -> {
@@ -1344,7 +1361,7 @@ private fun EpubPaginatedReader(
                     chapterSwitchRequested = true
                     val (finalPos, overall) = buildPositionForPage(pagerState.currentPage, pages, layoutKey)
                     latestOnHorizontalPositionChanged(chapter, finalPos, overall)
-                    latestOnSelectChapter(chapter.index + 1)
+                    latestOnSelectChapterBoundary(chapter.index + 1, false)
                   }
                 }
                 else -> onToggleControls()
@@ -1821,6 +1838,7 @@ private fun EpubScrollReader(
   chapterStubs: List<EpubChapterStub>,
   chapter: EpubChapter,
   initialVerticalPosition: EpubVerticalScrollPosition?,
+  initialOpenAtEnd: Boolean,
   surfaceColors: ReaderSurfaceColors,
   preferences: ReaderPreferences,
   imageCache: Map<String, Bitmap>,
@@ -1848,13 +1866,14 @@ private fun EpubScrollReader(
     position: EpubVerticalScrollPosition,
     overallProgress: Float
   ) -> Unit,
-  onSelectChapter: (Int) -> Unit,
+  onSelectChapterBoundary: (chapterIndex: Int, openAtEnd: Boolean) -> Unit,
   onVisibleBlockChanged: (Int) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val chapterId = remember(chapter.index, chapter.zipPath, chapterStubs) {
     epubChapterUniqueId(chapter, chapterStubs)
   }
+  val openChapterAtEnd = remember(chapterId) { initialOpenAtEnd }
   val layoutSignature = remember(
     preferences.fontSizeSp,
     preferences.lineHeightMultiplier,
@@ -1869,11 +1888,15 @@ private fun EpubScrollReader(
     )
   }
   val initialScrollTarget = remember(chapterId) {
-    resolveVerticalScrollRestoreTarget(
-      saved = initialVerticalPosition,
-      blockCount = chapter.blocks.size,
-      currentLayout = layoutSignature
-    )
+    if (openChapterAtEnd) {
+      chapter.blocks.lastIndex.coerceAtLeast(0) to 0
+    } else {
+      resolveVerticalScrollRestoreTarget(
+        saved = initialVerticalPosition,
+        blockCount = chapter.blocks.size,
+        currentLayout = layoutSignature
+      )
+    }
   }
   val listState = rememberLazyListState(
     initialFirstVisibleItemIndex = initialScrollTarget.first,
@@ -1892,14 +1915,18 @@ private fun EpubScrollReader(
   }
 
   var lastAppliedLayoutSignature by remember(chapterId) {
-    mutableStateOf(initialVerticalPosition?.layoutSignature ?: layoutSignature)
+    mutableStateOf(
+      if (openChapterAtEnd) layoutSignature
+      else (initialVerticalPosition?.layoutSignature ?: layoutSignature)
+    )
   }
   var activeAnchor by remember(chapterId) {
-    mutableStateOf(initialVerticalPosition)
+    mutableStateOf(if (openChapterAtEnd) null else initialVerticalPosition)
   }
   var pendingLayoutRestoreAnchor by remember(chapterId) {
     mutableStateOf(
-      if (initialVerticalPosition != null &&
+      if (!openChapterAtEnd &&
+        initialVerticalPosition != null &&
         initialVerticalPosition.layoutSignature != null &&
         initialVerticalPosition.layoutSignature != layoutSignature
       ) {
@@ -1975,6 +2002,9 @@ private fun EpubScrollReader(
   var hasCompletedInitialLayout by remember(chapterId) {
     mutableStateOf(coverImageBlock != null)
   }
+  var isRestoringEndOfChapter by remember(chapterId) {
+    mutableStateOf(openChapterAtEnd && coverImageBlock == null && chapter.blocks.isNotEmpty())
+  }
   var chapterSwitchRequested by remember(chapterId) {
     mutableStateOf(false)
   }
@@ -1984,6 +2014,42 @@ private fun EpubScrollReader(
       delay(600L)
       chapterSwitchRequested = false
     }
+  }
+
+  LaunchedEffect(chapterId) {
+    if (!openChapterAtEnd || coverImageBlock != null || chapter.blocks.isEmpty()) {
+      return@LaunchedEffect
+    }
+    snapshotFlow { listState.layoutInfo.visibleItemsInfo.isNotEmpty() }
+      .first { it }
+    val lastIdx = chapter.blocks.lastIndex.coerceAtLeast(0)
+    if (listState.firstVisibleItemIndex < lastIdx && listState.canScrollForward) {
+      listState.scrollToItem(lastIdx, 0)
+      withFrameNanos { }
+    }
+    var pass = 0
+    while (listState.canScrollForward && pass < 8) {
+      val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+      val remaining = (listState.layoutInfo.totalItemsCount - 1 - lastVisible).coerceAtLeast(1)
+      if (remaining > 1) {
+        listState.scrollToItem(lastIdx, 0)
+      } else {
+        listState.scrollBy(50_000f)
+      }
+      withFrameNanos { }
+      pass++
+    }
+    val settledPos = captureCurrentVerticalPosition().copy(layoutSignature = layoutSignature)
+    activeAnchor = settledPos
+    lastAppliedLayoutSignature = layoutSignature
+    pendingLayoutRestoreAnchor = null
+    isRestoringEndOfChapter = false
+    hasCompletedInitialLayout = true
+    latestOnVerticalPositionChanged(
+      chapter,
+      settledPos,
+      computeOverallProgress(settledPos.blockIndex, !listState.canScrollForward)
+    )
   }
 
   LaunchedEffect(pendingLayoutRestoreAnchor, layoutSignature) {
@@ -2048,7 +2114,7 @@ private fun EpubScrollReader(
       val isScrolling = snapshot[2] == 1
       val visibleCount = snapshot[3]
       onVisibleBlockChanged(firstIdx)
-      if (coverImageBlock != null || visibleCount <= 0) return@collect
+      if (coverImageBlock != null || visibleCount <= 0 || isRestoringEndOfChapter) return@collect
       if (pendingLayoutRestoreAnchor != null || lastAppliedLayoutSignature != layoutSignature) return@collect
 
       hasCompletedInitialLayout = true
@@ -2067,6 +2133,7 @@ private fun EpubScrollReader(
   DisposableEffect(chapterId) {
     onDispose {
       if (coverImageBlock == null &&
+        !isRestoringEndOfChapter &&
         pendingLayoutRestoreAnchor == null &&
         lastAppliedLayoutSignature == layoutSignature &&
         hasCompletedInitialLayout &&
@@ -2112,10 +2179,10 @@ private fun EpubScrollReader(
   val latestSelection by rememberUpdatedState(activeSelection)
   val latestOnSelectionChanged by rememberUpdatedState(onSelectionChanged)
   val latestOnToggleControls by rememberUpdatedState(onToggleControls)
-  val latestOnSelectChapter by rememberUpdatedState(onSelectChapter)
+  val latestOnSelectChapterBoundary by rememberUpdatedState(onSelectChapterBoundary)
 
   val scrollTolerancePx = with(density) { 6.dp.toPx() }
-  val boundaryPullThresholdPx = with(density) { 84.dp.toPx() }
+  val boundaryPullThresholdPx = with(density) { 72.dp.toPx() }
 
   val boundaryGestureState = remember(chapterId) {
     object {
@@ -2263,7 +2330,7 @@ private fun EpubScrollReader(
                     computeOverallProgress(pos.blockIndex, !listState.canScrollForward)
                   )
                 }
-                latestOnSelectChapter(chapter.index + 1)
+                latestOnSelectChapterBoundary(chapter.index + 1, false)
               }
               EpubBoundaryAction.PREVIOUS_CHAPTER -> {
                 chapterSwitchRequested = true
@@ -2279,7 +2346,7 @@ private fun EpubScrollReader(
                     computeOverallProgress(pos.blockIndex, !listState.canScrollForward)
                   )
                 }
-                latestOnSelectChapter(chapter.index - 1)
+                latestOnSelectChapterBoundary(chapter.index - 1, true)
               }
               EpubBoundaryAction.NONE -> Unit
             }
