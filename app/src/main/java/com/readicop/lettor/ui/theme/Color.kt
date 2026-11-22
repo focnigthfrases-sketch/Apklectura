@@ -20,6 +20,12 @@ val OnSageContainer = Color(0xFF1D291B)
 val OchreTertiary = Color(0xFF9C6B2F)
 val OchreContainer = Color(0xFFF3E4CE)
 
+// Minimal Floating Text Selection Bar
+val SelectionBarLightBackground = Color(0xFFFCFAF7)
+val SelectionBarInk = Color(0xFF1B1917)
+val SelectionBarDivider = Color(0xFFE3DFD8)
+val SelectionBarBorder = Color(0x14000000)
+
 // Editorial Literary Atelier Palette — Dark
 val EspressoBackground = Color(0xFF141210)
 val EspressoSurface = Color(0xFF1E1B18)

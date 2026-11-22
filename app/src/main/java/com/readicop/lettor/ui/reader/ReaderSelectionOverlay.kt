@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatAlignLeft
@@ -61,9 +64,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.readicop.lettor.ui.theme.ReaderSurfaceColors
+import com.readicop.lettor.ui.theme.SelectionBarBorder
+import com.readicop.lettor.ui.theme.SelectionBarDivider
+import com.readicop.lettor.ui.theme.SelectionBarInk
+import com.readicop.lettor.ui.theme.SelectionBarLightBackground
 import kotlin.math.asin
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -433,26 +441,30 @@ private fun SelectionFloatingMenu(
     else -> if (selectionBounds.center.y >= containerSize.height * 0.5f) topLimit else bottomLimit
   }
 
-  val menuShape = RoundedCornerShape(16.dp)
-  val borderColor = if (surfaceColors.isDark) {
-    surfaceColors.divider.copy(alpha = 0.95f)
-  } else {
-    surfaceColors.divider
-  }
+  val menuShape = CircleShape
+  val maxAvailableWidthDp = with(density) { (containerSize.width.toFloat() - edgeMarginPx * 2f).coerceAtLeast(220f).toDp() }
+  val isCompactScreen = maxAvailableWidthDp < 372.dp
+  val pillHorizontalPaddingDp = if (isCompactScreen) 8 else 12
+  val buttonHorizontalPaddingDp = if (isCompactScreen) 6 else 10
+  val minLabeledWidthDp = if (isCompactScreen) 48 else 56
+  val labelFontSize = if (isCompactScreen) 10.sp else 10.5.sp
 
   Surface(
     shape = menuShape,
-    color = surfaceColors.surface,
-    shadowElevation = 10.dp,
+    color = SelectionBarLightBackground,
+    shadowElevation = 6.dp,
     modifier = Modifier
       .offset { IntOffset(clampedX.roundToInt(), targetY.roundToInt()) }
+      .widthIn(max = maxAvailableWidthDp)
       .onSizeChanged { menuSize = it }
       .alpha(if (menuSize.width > 0 && menuSize.height > 0) 1f else 0f)
-      .border(1.dp, borderColor, menuShape)
+      .border(0.75.dp, SelectionBarBorder, menuShape)
       .testTag("selection_floating_menu")
   ) {
     Row(
-      modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+      modifier = Modifier
+        .horizontalScroll(rememberScrollState())
+        .padding(horizontal = pillHorizontalPaddingDp.dp, vertical = 4.dp),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -461,86 +473,86 @@ private fun SelectionFloatingMenu(
           label = "Copiar",
           iconType = SelectionCanvasIconType.COPY,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
-          minButtonWidthDp = 48,
-          horizontalPaddingDp = 6,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_copy",
           onClick = {
             moreMenuExpanded = false
             onCopyPlain()
           }
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Traducir",
           iconType = SelectionCanvasIconType.TRANSLATE,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
-          minButtonWidthDp = 48,
-          horizontalPaddingDp = 6,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_translate",
           onClick = {
             moreMenuExpanded = false
             onTranslate()
           }
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Resaltar",
           iconType = SelectionCanvasIconType.HIGHLIGHT,
           enabled = highlightEnabled,
-          surfaceColors = surfaceColors,
-          minButtonWidthDp = 48,
-          horizontalPaddingDp = 6,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_highlight",
           onClick = {
             moreMenuExpanded = false
             onHighlight()
           }
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Diccionario",
           iconType = SelectionCanvasIconType.DICTIONARY,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
-          minButtonWidthDp = 48,
-          horizontalPaddingDp = 6,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_dictionary",
           onClick = {
             moreMenuExpanded = false
             onDictionary()
           }
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         Box {
           SelectionCanvasMenuButton(
             label = null,
             accessibilityLabel = "Más opciones",
             iconType = SelectionCanvasIconType.MORE_MENU,
             enabled = copyEnabled,
-            surfaceColors = surfaceColors,
             minButtonWidthDp = 48,
-            horizontalPaddingDp = 6,
+            horizontalPaddingDp = 8,
+            labelFontSize = labelFontSize,
             testTag = "selection_action_more",
             onClick = { moreMenuExpanded = !moreMenuExpanded }
           )
           DropdownMenu(
             expanded = moreMenuExpanded,
             onDismissRequest = { moreMenuExpanded = false },
-            containerColor = surfaceColors.surface,
+            containerColor = SelectionBarLightBackground,
             modifier = Modifier.testTag("selection_more_dropdown")
           ) {
             DropdownMenuItem(
-              text = { Text("Palabras", color = surfaceColors.text) },
+              text = { Text("Palabras", color = SelectionBarInk) },
               leadingIcon = {
                 Icon(
                   imageVector = Icons.Default.TextFields,
                   contentDescription = null,
-                  tint = surfaceColors.text
+                  tint = SelectionBarInk
                 )
               },
-              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              colors = MenuDefaults.itemColors(textColor = SelectionBarInk),
               onClick = {
                 moreMenuExpanded = false
                 onSelectWord()
@@ -548,15 +560,15 @@ private fun SelectionFloatingMenu(
               modifier = Modifier.testTag("selection_menu_item_words")
             )
             DropdownMenuItem(
-              text = { Text("Compartir", color = surfaceColors.text) },
+              text = { Text("Compartir", color = SelectionBarInk) },
               leadingIcon = {
                 Icon(
                   imageVector = Icons.Default.Share,
                   contentDescription = null,
-                  tint = surfaceColors.text
+                  tint = SelectionBarInk
                 )
               },
-              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              colors = MenuDefaults.itemColors(textColor = SelectionBarInk),
               onClick = {
                 moreMenuExpanded = false
                 onShare()
@@ -564,15 +576,15 @@ private fun SelectionFloatingMenu(
               modifier = Modifier.testTag("selection_menu_item_share")
             )
             DropdownMenuItem(
-              text = { Text("Párrafo", color = surfaceColors.text) },
+              text = { Text("Párrafo", color = SelectionBarInk) },
               leadingIcon = {
                 Icon(
                   imageVector = Icons.AutoMirrored.Filled.FormatAlignLeft,
                   contentDescription = null,
-                  tint = surfaceColors.text
+                  tint = SelectionBarInk
                 )
               },
-              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              colors = MenuDefaults.itemColors(textColor = SelectionBarInk),
               onClick = {
                 moreMenuExpanded = false
                 onSelectParagraph()
@@ -586,34 +598,42 @@ private fun SelectionFloatingMenu(
           label = "Copiar",
           iconType = SelectionCanvasIconType.COPY,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_copy",
           onClick = onCopyPlain
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Párrafo",
           iconType = SelectionCanvasIconType.PARAGRAPH,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_paragraph",
           onClick = onSelectParagraph
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Resaltar",
           iconType = SelectionCanvasIconType.HIGHLIGHT,
           enabled = highlightEnabled,
-          surfaceColors = surfaceColors,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_highlight",
           onClick = onHighlight
         )
-        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasDivider(SelectionBarDivider)
         SelectionCanvasMenuButton(
           label = "Compartir",
           iconType = SelectionCanvasIconType.SHARE,
           enabled = copyEnabled,
-          surfaceColors = surfaceColors,
+          minButtonWidthDp = minLabeledWidthDp,
+          horizontalPaddingDp = buttonHorizontalPaddingDp,
+          labelFontSize = labelFontSize,
           testTag = "selection_action_share",
           onClick = onShare
         )
@@ -626,9 +646,9 @@ private fun SelectionFloatingMenu(
 private fun SelectionCanvasDivider(color: Color) {
   Box(
     modifier = Modifier
-      .width(1.dp)
-      .height(26.dp)
-      .background(color.copy(alpha = 0.7f))
+      .width(0.8.dp)
+      .height(28.dp)
+      .background(color)
   )
 }
 
@@ -637,23 +657,22 @@ private fun SelectionCanvasMenuButton(
   label: String?,
   iconType: SelectionCanvasIconType,
   enabled: Boolean,
-  surfaceColors: ReaderSurfaceColors,
   testTag: String,
   accessibilityLabel: String = label.orEmpty(),
   minButtonWidthDp: Int = 56,
-  horizontalPaddingDp: Int = 8,
+  horizontalPaddingDp: Int = 10,
+  labelFontSize: TextUnit = 10.5.sp,
   onClick: () -> Unit
 ) {
-  val iconTint = surfaceColors.text
-  val accentTint = surfaceColors.accent
+  val iconTint = SelectionBarInk
 
   Column(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.Center,
     modifier = Modifier
       .widthIn(min = minButtonWidthDp.dp)
-      .height(48.dp)
-      .clip(RoundedCornerShape(12.dp))
+      .height(50.dp)
+      .clip(RoundedCornerShape(16.dp))
       .then(
         if (enabled) {
           Modifier.clickable(role = Role.Button, onClick = onClick)
@@ -669,7 +688,7 @@ private fun SelectionCanvasMenuButton(
       }
       .testTag(testTag)
   ) {
-    Canvas(modifier = Modifier.size(18.dp)) {
+    Canvas(modifier = Modifier.size(20.dp)) {
       val w = size.width
       val h = size.height
       val strokePx = 1.65.dp.toPx()
@@ -677,55 +696,51 @@ private fun SelectionCanvasMenuButton(
 
       when (iconType) {
         SelectionCanvasIconType.COPY -> {
-          // Back sheet arc/frame
-          val backPath = Path().apply {
-            moveTo(w * 0.34f, h * 0.24f)
-            lineTo(w * 0.34f, h * 0.16f)
-            quadraticTo(w * 0.34f, h * 0.10f, w * 0.40f, h * 0.10f)
-            lineTo(w * 0.80f, h * 0.10f)
-            quadraticTo(w * 0.86f, h * 0.10f, w * 0.86f, h * 0.16f)
-            lineTo(w * 0.86f, h * 0.66f)
-            quadraticTo(w * 0.86f, h * 0.72f, w * 0.80f, h * 0.72f)
-            lineTo(w * 0.72f, h * 0.72f)
+          // Two overlapping rounded sheets (back sheet peeking top-right + clean front sheet)
+          val backSheetPath = Path().apply {
+            moveTo(w * 0.34f, h * 0.27f)
+            lineTo(w * 0.34f, h * 0.17f)
+            quadraticTo(w * 0.34f, h * 0.11f, w * 0.40f, h * 0.11f)
+            lineTo(w * 0.80f, h * 0.11f)
+            quadraticTo(w * 0.86f, h * 0.11f, w * 0.86f, h * 0.17f)
+            lineTo(w * 0.86f, h * 0.65f)
+            quadraticTo(w * 0.86f, h * 0.71f, w * 0.80f, h * 0.71f)
+            lineTo(w * 0.68f, h * 0.71f)
           }
-          drawPath(backPath, color = iconTint.copy(alpha = 0.78f), style = stroke)
+          drawPath(backSheetPath, color = iconTint, style = stroke)
 
-          // Front rounded document sheet
           drawRoundRect(
             color = iconTint,
-            topLeft = Offset(w * 0.14f, h * 0.28f),
+            topLeft = Offset(w * 0.14f, h * 0.27f),
             size = Size(w * 0.54f, h * 0.62f),
-            cornerRadius = CornerRadius(2.4.dp.toPx(), 2.4.dp.toPx()),
+            cornerRadius = CornerRadius(2.6.dp.toPx(), 2.6.dp.toPx()),
             style = stroke
           )
-          // Subtle text lines on front sheet
           drawLine(
-            color = accentTint,
-            start = Offset(w * 0.27f, h * 0.49f),
-            end = Offset(w * 0.55f, h * 0.49f),
-            strokeWidth = strokePx * 0.9f,
+            color = iconTint,
+            start = Offset(w * 0.29f, h * 0.49f),
+            end = Offset(w * 0.53f, h * 0.49f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
           drawLine(
-            color = iconTint.copy(alpha = 0.75f),
-            start = Offset(w * 0.27f, h * 0.66f),
-            end = Offset(w * 0.49f, h * 0.66f),
-            strokeWidth = strokePx * 0.9f,
+            color = iconTint,
+            start = Offset(w * 0.29f, h * 0.66f),
+            end = Offset(w * 0.48f, h * 0.66f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
         }
 
         SelectionCanvasIconType.PARAGRAPH -> {
-          // Fine rounded editorial pilcrow (¶) drawn directly on Canvas
           val bowl = Path().apply {
             moveTo(w * 0.50f, h * 0.17f)
             lineTo(w * 0.36f, h * 0.17f)
             cubicTo(w * 0.15f, h * 0.17f, w * 0.15f, h * 0.53f, w * 0.36f, h * 0.53f)
             lineTo(w * 0.50f, h * 0.53f)
           }
-          drawPath(bowl, color = accentTint, style = stroke)
+          drawPath(bowl, color = iconTint, style = stroke)
 
-          // Top horizontal bar & twin vertical stems
           drawLine(
             color = iconTint,
             start = Offset(w * 0.42f, h * 0.17f),
@@ -750,40 +765,47 @@ private fun SelectionCanvasMenuButton(
         }
 
         SelectionCanvasIconType.HIGHLIGHT -> {
-          // Angled editorial highlighter nib + accented highlight underline
-          val penBody = Path().apply {
-            moveTo(w * 0.30f, h * 0.68f)
-            lineTo(w * 0.24f, h * 0.56f)
-            lineTo(w * 0.64f, h * 0.14f)
-            quadraticTo(w * 0.70f, h * 0.08f, w * 0.76f, h * 0.14f)
-            lineTo(w * 0.84f, h * 0.22f)
-            quadraticTo(w * 0.90f, h * 0.28f, w * 0.84f, h * 0.34f)
-            lineTo(w * 0.44f, h * 0.74f)
+          // Broad angled chisel-tip highlighter marker (flat beveled tip, not a pointed pencil)
+          val markerBody = Path().apply {
+            moveTo(w * 0.65f, h * 0.13f)
+            lineTo(w * 0.83f, h * 0.31f)
+            lineTo(w * 0.51f, h * 0.63f)
+            lineTo(w * 0.38f, h * 0.73f)
+            lineTo(w * 0.24f, h * 0.73f)
+            lineTo(w * 0.22f, h * 0.66f)
+            lineTo(w * 0.33f, h * 0.45f)
             close()
           }
-          drawPath(penBody, color = iconTint, style = stroke)
-          // Nib collar line
+          drawPath(markerBody, color = iconTint, style = stroke)
+          // Grip divider across barrel
           drawLine(
             color = iconTint,
-            start = Offset(w * 0.55f, h * 0.24f),
-            end = Offset(w * 0.74f, h * 0.43f),
-            strokeWidth = strokePx * 0.9f,
+            start = Offset(w * 0.53f, h * 0.25f),
+            end = Offset(w * 0.71f, h * 0.43f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
-          // Warm glowing highlight stroke beneath the tip
+          // Marker collar before the chisel tip
           drawLine(
-            color = accentTint,
-            start = Offset(w * 0.14f, h * 0.85f),
-            end = Offset(w * 0.86f, h * 0.85f),
-            strokeWidth = 2.4.dp.toPx(),
+            color = iconTint,
+            start = Offset(w * 0.33f, h * 0.45f),
+            end = Offset(w * 0.51f, h * 0.63f),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+          // Highlight stroke below the chisel tip
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.15f, h * 0.84f),
+            end = Offset(w * 0.85f, h * 0.84f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
         }
 
         SelectionCanvasIconType.SHARE -> {
-          // Editorial upward share arrow + open rounded tray
           drawLine(
-            color = accentTint,
+            color = iconTint,
             start = Offset(w * 0.50f, h * 0.62f),
             end = Offset(w * 0.50f, h * 0.14f),
             strokeWidth = strokePx,
@@ -794,7 +816,7 @@ private fun SelectionCanvasMenuButton(
             lineTo(w * 0.50f, h * 0.14f)
             lineTo(w * 0.69f, h * 0.33f)
           }
-          drawPath(arrowHead, color = accentTint, style = stroke)
+          drawPath(arrowHead, color = iconTint, style = stroke)
 
           val tray = Path().apply {
             moveTo(w * 0.18f, h * 0.54f)
@@ -808,66 +830,68 @@ private fun SelectionCanvasMenuButton(
         }
 
         SelectionCanvasIconType.TRANSLATE -> {
-          // Two overlapping language cards with bidirectional translation arrow
-          drawRoundRect(
-            color = iconTint,
-            topLeft = Offset(w * 0.12f, h * 0.14f),
-            size = Size(w * 0.44f, h * 0.44f),
-            cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
-            style = stroke
-          )
-          drawRoundRect(
-            color = accentTint,
-            topLeft = Offset(w * 0.44f, h * 0.42f),
-            size = Size(w * 0.44f, h * 0.44f),
-            cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
-            style = stroke
-          )
-          // Stylized 'A' inside front-top card
+          // Clean geometric Latin letter 'A' (upper-left) paired with language glyph '文' (lower-right)
+          val letterA = Path().apply {
+            moveTo(w * 0.13f, h * 0.56f)
+            lineTo(w * 0.28f, h * 0.14f)
+            lineTo(w * 0.43f, h * 0.56f)
+          }
+          drawPath(letterA, color = iconTint, style = stroke)
           drawLine(
             color = iconTint,
-            start = Offset(w * 0.24f, h * 0.46f),
-            end = Offset(w * 0.34f, h * 0.24f),
-            strokeWidth = strokePx * 0.85f,
+            start = Offset(w * 0.18f, h * 0.44f),
+            end = Offset(w * 0.38f, h * 0.44f),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+
+          // Language symbol '文'
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.67f, h * 0.34f),
+            end = Offset(w * 0.67f, h * 0.44f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
           drawLine(
             color = iconTint,
-            start = Offset(w * 0.34f, h * 0.24f),
-            end = Offset(w * 0.44f, h * 0.46f),
-            strokeWidth = strokePx * 0.85f,
+            start = Offset(w * 0.47f, h * 0.44f),
+            end = Offset(w * 0.87f, h * 0.44f),
+            strokeWidth = strokePx,
             cap = StrokeCap.Round
           )
-          // Accent line inside second card
-          drawLine(
-            color = accentTint,
-            start = Offset(w * 0.56f, h * 0.64f),
-            end = Offset(w * 0.76f, h * 0.64f),
-            strokeWidth = strokePx * 0.9f,
-            cap = StrokeCap.Round
-          )
+          val leftSweep = Path().apply {
+            moveTo(w * 0.77f, h * 0.44f)
+            quadraticTo(w * 0.71f, h * 0.68f, w * 0.49f, h * 0.85f)
+          }
+          drawPath(leftSweep, color = iconTint, style = stroke)
+          val rightSweep = Path().apply {
+            moveTo(w * 0.57f, h * 0.52f)
+            quadraticTo(w * 0.67f, h * 0.70f, w * 0.85f, h * 0.85f)
+          }
+          drawPath(rightSweep, color = iconTint, style = stroke)
         }
 
         SelectionCanvasIconType.DICTIONARY -> {
-          // Open editorial book + accent spine/bookmark line
+          // Minimalist symmetric open book
           val leftPage = Path().apply {
             moveTo(w * 0.50f, h * 0.26f)
-            quadraticTo(w * 0.31f, h * 0.16f, w * 0.12f, h * 0.24f)
-            lineTo(w * 0.12f, h * 0.78f)
-            quadraticTo(w * 0.31f, h * 0.70f, w * 0.50f, h * 0.80f)
+            quadraticTo(w * 0.32f, h * 0.17f, w * 0.13f, h * 0.23f)
+            lineTo(w * 0.13f, h * 0.77f)
+            quadraticTo(w * 0.32f, h * 0.71f, w * 0.50f, h * 0.80f)
             close()
           }
           val rightPage = Path().apply {
             moveTo(w * 0.50f, h * 0.26f)
-            quadraticTo(w * 0.69f, h * 0.16f, w * 0.88f, h * 0.24f)
-            lineTo(w * 0.88f, h * 0.78f)
-            quadraticTo(w * 0.69f, h * 0.70f, w * 0.50f, h * 0.80f)
+            quadraticTo(w * 0.68f, h * 0.17f, w * 0.87f, h * 0.23f)
+            lineTo(w * 0.87f, h * 0.77f)
+            quadraticTo(w * 0.68f, h * 0.71f, w * 0.50f, h * 0.80f)
             close()
           }
           drawPath(leftPage, color = iconTint, style = stroke)
           drawPath(rightPage, color = iconTint, style = stroke)
           drawLine(
-            color = accentTint,
+            color = iconTint,
             start = Offset(w * 0.50f, h * 0.26f),
             end = Offset(w * 0.50f, h * 0.80f),
             strokeWidth = strokePx,
@@ -876,42 +900,37 @@ private fun SelectionCanvasMenuButton(
         }
 
         SelectionCanvasIconType.MORE_MENU -> {
-          // Three clean horizontal bars ("3 rayas")
-          val barStroke = 1.9.dp.toPx()
-          drawLine(
+          // Three vertical dots (⋮), icon only
+          val dotRadius = 1.65.dp.toPx()
+          drawCircle(
             color = iconTint,
-            start = Offset(w * 0.16f, h * 0.26f),
-            end = Offset(w * 0.84f, h * 0.26f),
-            strokeWidth = barStroke,
-            cap = StrokeCap.Round
+            radius = dotRadius,
+            center = Offset(w * 0.50f, h * 0.22f)
           )
-          drawLine(
+          drawCircle(
             color = iconTint,
-            start = Offset(w * 0.16f, h * 0.50f),
-            end = Offset(w * 0.84f, h * 0.50f),
-            strokeWidth = barStroke,
-            cap = StrokeCap.Round
+            radius = dotRadius,
+            center = Offset(w * 0.50f, h * 0.50f)
           )
-          drawLine(
+          drawCircle(
             color = iconTint,
-            start = Offset(w * 0.16f, h * 0.74f),
-            end = Offset(w * 0.84f, h * 0.74f),
-            strokeWidth = barStroke,
-            cap = StrokeCap.Round
+            radius = dotRadius,
+            center = Offset(w * 0.50f, h * 0.78f)
           )
         }
       }
     }
 
     if (!label.isNullOrBlank()) {
-      Spacer(Modifier.height(2.dp))
+      Spacer(Modifier.height(4.dp))
       Text(
         text = label,
-        fontSize = 10.sp,
+        fontSize = labelFontSize,
         lineHeight = 12.sp,
         fontWeight = FontWeight.Medium,
-        color = surfaceColors.text,
+        color = SelectionBarInk,
         maxLines = 1,
+        softWrap = false,
         overflow = TextOverflow.Clip
       )
     }
