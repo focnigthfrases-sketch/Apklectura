@@ -69,12 +69,16 @@ import com.readicop.lettor.ui.components.LettorModalBottomSheet
 import com.readicop.lettor.ui.theme.LiterataFamily
 import com.readicop.lettor.ui.theme.PlayfairDisplayFamily
 
+internal const val FRAGMENT_TAB_HIGHLIGHT = 0
+internal const val FRAGMENT_TAB_TRANSLATE = 1
+internal const val FRAGMENT_TAB_DICTIONARY = 2
+
 /**
  * Interactive fragment toolbox opened when long-pressing a paragraph or tapping Text Tools:
  * - Multi-color highlighter (5 colors) + Sticky note
  * - Copy & Share quote
- * - Integrated offline dictionary + Vocabulary saver
  * - Offline phrase translator + browser fallback
+ * - Integrated offline dictionary + Vocabulary saver
  * - Start TTS from this paragraph
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -84,6 +88,7 @@ fun FragmentToolsSheet(
   bookAuthor: String,
   fragmentText: String,
   blockIndex: Int,
+  initialTab: Int = 0,
   hasHighlightableRange: Boolean = blockIndex >= 0,
   hasSelection: Boolean = fragmentText.isNotBlank() && hasHighlightableRange,
   onSaveHighlight: (stickyNote: String, color: HighlightColor, isStickyOnly: Boolean) -> Unit,
@@ -93,7 +98,7 @@ fun FragmentToolsSheet(
   onDismiss: () -> Unit
 ) {
   val context = LocalContext.current
-  var selectedTab by remember { mutableIntStateOf(0) }
+  var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 2)) }
   var selectedColor by remember { mutableStateOf(HighlightColor.AMBER) }
   var stickyNote by remember { mutableStateOf("") }
   var statusFeedback by remember { mutableStateOf<String?>(null) }
@@ -180,15 +185,30 @@ fun FragmentToolsSheet(
 
       Spacer(Modifier.height(10.dp))
       TabRow(selectedTabIndex = selectedTab) {
-        Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Resaltar y Nota") })
-        Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Diccionario") })
-        Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("Traducir") })
+        Tab(
+          selected = selectedTab == FRAGMENT_TAB_HIGHLIGHT,
+          onClick = { selectedTab = FRAGMENT_TAB_HIGHLIGHT },
+          text = { Text("Resaltar y Nota") },
+          modifier = Modifier.testTag("fragment_tab_highlight")
+        )
+        Tab(
+          selected = selectedTab == FRAGMENT_TAB_TRANSLATE,
+          onClick = { selectedTab = FRAGMENT_TAB_TRANSLATE },
+          text = { Text("Traducir") },
+          modifier = Modifier.testTag("fragment_tab_translate")
+        )
+        Tab(
+          selected = selectedTab == FRAGMENT_TAB_DICTIONARY,
+          onClick = { selectedTab = FRAGMENT_TAB_DICTIONARY },
+          text = { Text("Diccionario") },
+          modifier = Modifier.testTag("fragment_tab_dictionary")
+        )
       }
 
       Spacer(Modifier.height(14.dp))
 
       when (selectedTab) {
-        0 -> {
+        FRAGMENT_TAB_HIGHLIGHT -> {
           Text(
             text = "COLOR DEL RESALTADOR",
             style = MaterialTheme.typography.labelSmall,
@@ -316,7 +336,75 @@ fun FragmentToolsSheet(
           }
         }
 
-        1 -> {
+        FRAGMENT_TAB_TRANSLATE -> {
+          // Offline Translator + browser fallback
+          Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              if (translationResult != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                  Spacer(Modifier.width(8.dp))
+                  Text(
+                    text = translationResult.targetLanguageLabel,
+                    style = MaterialTheme.typography.titleSmall
+                  )
+                }
+                Text(
+                  text = translationResult.translatedText,
+                  style = MaterialTheme.typography.bodyLarge.copy(fontFamily = LiterataFamily)
+                )
+                Text(
+                  text = translationResult.coverageNote,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                  Spacer(Modifier.width(8.dp))
+                  Text(
+                    text = "Traducir fragmento",
+                    style = MaterialTheme.typography.titleSmall
+                  )
+                }
+                Text(
+                  text = "Selecciona texto y presiona Resaltar",
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                  onClick = {
+                    val tr = translationResult ?: return@OutlinedButton
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("Traducción", tr.translatedText))
+                    statusFeedback = "Traducción copiada"
+                  },
+                  enabled = translationResult != null
+                ) {
+                  Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(6.dp))
+                  Text("Copiar")
+                }
+                FilledTonalButton(
+                  onClick = { LocalDictionaryAndTranslator.openExternalTranslator(context, effectiveFragment) },
+                  enabled = translationResult != null
+                ) {
+                  Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(6.dp))
+                  Text("Traductor completo")
+                }
+              }
+            }
+          }
+        }
+
+        FRAGMENT_TAB_DICTIONARY -> {
           // Integrated Dictionary + Vocabulary Saver
           OutlinedTextField(
             value = wordQuery,
@@ -404,74 +492,6 @@ fun FragmentToolsSheet(
                     Spacer(Modifier.width(4.dp))
                     Text("DLE")
                   }
-                }
-              }
-            }
-          }
-        }
-
-        2 -> {
-          // Offline Translator + browser fallback
-          Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth()
-          ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              if (translationResult != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                  Spacer(Modifier.width(8.dp))
-                  Text(
-                    text = translationResult.targetLanguageLabel,
-                    style = MaterialTheme.typography.titleSmall
-                  )
-                }
-                Text(
-                  text = translationResult.translatedText,
-                  style = MaterialTheme.typography.bodyLarge.copy(fontFamily = LiterataFamily)
-                )
-                Text(
-                  text = translationResult.coverageNote,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-              } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                  Icon(Icons.Default.Translate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                  Spacer(Modifier.width(8.dp))
-                  Text(
-                    text = "Traducir fragmento",
-                    style = MaterialTheme.typography.titleSmall
-                  )
-                }
-                Text(
-                  text = "Selecciona texto y presiona Resaltar",
-                  style = MaterialTheme.typography.bodyMedium,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-              }
-              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                  onClick = {
-                    val tr = translationResult ?: return@OutlinedButton
-                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("Traducción", tr.translatedText))
-                    statusFeedback = "Traducción copiada"
-                  },
-                  enabled = translationResult != null
-                ) {
-                  Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                  Spacer(Modifier.width(6.dp))
-                  Text("Copiar")
-                }
-                FilledTonalButton(
-                  onClick = { LocalDictionaryAndTranslator.openExternalTranslator(context, effectiveFragment) },
-                  enabled = translationResult != null
-                ) {
-                  Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
-                  Spacer(Modifier.width(6.dp))
-                  Text("Traductor completo")
                 }
               }
             }

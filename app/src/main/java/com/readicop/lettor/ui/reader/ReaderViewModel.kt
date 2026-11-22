@@ -37,6 +37,7 @@ import com.readicop.lettor.domain.engine.TtsReaderController
 import com.readicop.lettor.domain.engine.TtsState
 import com.readicop.lettor.notifications.ResumeReadingScheduler
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -49,9 +50,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -126,6 +129,22 @@ class ReaderViewModel(
     onBufferOverflow = BufferOverflow.DROP_OLDEST
   )
 
+  private data class PendingProgressUpdate(
+    val bookId: Long,
+    val unit: Int,
+    val subOffset: Int,
+    val progress: Float,
+    val isFinished: Boolean
+  )
+
+  private val pendingProgressPersistFlow = MutableSharedFlow<PendingProgressUpdate>(
+    replay = 0,
+    extraBufferCapacity = 1,
+    onBufferOverflow = BufferOverflow.DROP_OLDEST
+  )
+  @Volatile
+  private var latestPendingProgress: PendingProgressUpdate? = null
+
   private var epubSession: LazyEpubSession? = null
   private var pdfSession: PdfBookSession? = null
   private var readingTimerJob: Job? = null
@@ -140,6 +159,7 @@ class ReaderViewModel(
   private val chapterAnchors = mutableMapOf<String, EpubChapterAnchor>()
   private val loadedScrollChapters = mutableMapOf<Int, EpubChapter>()
   private val inFlightChapterLoads = mutableSetOf<Int>()
+  private val inFlightImageLoads = ConcurrentHashMap.newKeySet<String>()
 
   private val ttsController: TtsReaderController = TtsReaderController(appContext) {
     // Advance to next chapter automatically when TTS finishes a chapter
@@ -262,6 +282,55 @@ class ReaderViewModel(
     viewModelScope.launch {
       preferencesRepository.setActiveReadingBookId(bookId)
       preferencesRepository.markHasOpenedAnyBook()
+    }
+    viewModelScope.launch {
+      pendingProgressPersistFlow.collectLatest { pending ->
+        delay(280L)
+        withContext(NonCancellable) {
+          repository.updateProgress(
+            bookId = pending.bookId,
+            unit = pending.unit,
+            subOffset = pending.subOffset,
+            progress = pending.progress,
+            isFinished = pending.isFinished
+          )
+          if (latestPendingProgress == pending) {
+            latestPendingProgress = null
+          }
+        }
+      }
+    }
+  }
+
+  private fun enqueueProgressPersist(
+    bookId: Long,
+    unit: Int,
+    subOffset: Int,
+    progress: Float,
+    isFinished: Boolean
+  ) {
+    val update = PendingProgressUpdate(
+      bookId = bookId,
+      unit = unit,
+      subOffset = subOffset,
+      progress = progress,
+      isFinished = isFinished
+    )
+    latestPendingProgress = update
+    pendingProgressPersistFlow.tryEmit(update)
+  }
+
+  private fun flushPendingProgressNow() {
+    val pending = latestPendingProgress ?: return
+    latestPendingProgress = null
+    backgroundNotificationScope.launch {
+      repository.updateProgress(
+        bookId = pending.bookId,
+        unit = pending.unit,
+        subOffset = pending.subOffset,
+        progress = pending.progress,
+        isFinished = pending.isFinished
+      )
     }
   }
 
@@ -430,15 +499,13 @@ class ReaderViewModel(
     currentUnitFlow.value = chapter.index
     currentSubOffsetFlow.value = safeSub
     val book = uiState.value.book ?: return
-    viewModelScope.launch {
-      repository.updateProgress(
-        bookId = book.id,
-        unit = chapter.index,
-        subOffset = safeSub,
-        progress = overallProgressFraction.coerceIn(0f, 1f),
-        isFinished = chapter.index >= totalUnits - 1 && overallProgressFraction >= 0.96f
-      )
-    }
+    enqueueProgressPersist(
+      bookId = book.id,
+      unit = chapter.index,
+      subOffset = safeSub,
+      progress = overallProgressFraction.coerceIn(0f, 1f),
+      isFinished = chapter.index >= totalUnits - 1 && overallProgressFraction >= 0.96f
+    )
   }
 
   fun onVerticalPositionChanged(
@@ -486,15 +553,13 @@ class ReaderViewModel(
     currentUnitFlow.value = chapter.index
     currentSubOffsetFlow.value = normalized.blockIndex.coerceAtLeast(0)
     val book = uiState.value.book ?: return
-    viewModelScope.launch {
-      repository.updateProgress(
-        bookId = book.id,
-        unit = chapter.index,
-        subOffset = normalized.blockIndex.coerceAtLeast(0),
-        progress = overallProgressFraction.coerceIn(0f, 1f),
-        isFinished = chapter.index >= totalUnits - 1 && overallProgressFraction >= 0.96f
-      )
-    }
+    enqueueProgressPersist(
+      bookId = book.id,
+      unit = chapter.index,
+      subOffset = normalized.blockIndex.coerceAtLeast(0),
+      progress = overallProgressFraction.coerceIn(0f, 1f),
+      isFinished = chapter.index >= totalUnits - 1 && overallProgressFraction >= 0.96f
+    )
   }
 
   fun jumpToUnit(targetUnit: Int) = jumpToUnitInternal(targetUnit, resetSubOffset = false, openAtEnd = false)
@@ -730,15 +795,13 @@ class ReaderViewModel(
 
     val overallProgress = unitProgressFraction ?: ((safeUnit + 1).toFloat() / totalUnits.toFloat())
     val book = uiState.value.book ?: return
-    viewModelScope.launch {
-      repository.updateProgress(
-        bookId = book.id,
-        unit = safeUnit,
-        subOffset = safeSub,
-        progress = overallProgress.coerceIn(0f, 1f),
-        isFinished = safeUnit >= totalUnits - 1 && overallProgress >= 0.96f
-      )
-    }
+    enqueueProgressPersist(
+      bookId = book.id,
+      unit = safeUnit,
+      subOffset = safeSub,
+      progress = overallProgress.coerceIn(0f, 1f),
+      isFinished = safeUnit >= totalUnits - 1 && overallProgress >= 0.96f
+    )
   }
 
   private fun loadChapterIntoTts(chapter: EpubChapter) {
@@ -905,11 +968,39 @@ class ReaderViewModel(
 
   fun requestEpubImage(zipEntryPath: String) {
     if (_epubImageCache.value.containsKey(zipEntryPath)) return
-    val book = uiState.value.book ?: return
+    if (!inFlightImageLoads.add(zipEntryPath)) return
+    val book = uiState.value.book
+    val session = epubSession
+    if (book == null && session == null) {
+      inFlightImageLoads.remove(zipEntryPath)
+      return
+    }
+    val coverZip = (contentStateFlow.value as? ReaderContentState.EpubReady)?.metadata?.coverZipPath
     viewModelScope.launch(Dispatchers.IO) {
-      val bmp = EpubParser.loadChapterImage(File(book.filePath), zipEntryPath)
-      if (bmp != null) {
-        _epubImageCache.value = _epubImageCache.value + (zipEntryPath to bmp)
+      try {
+        val bmp = session?.loadImage(zipEntryPath)
+          ?: book?.let { EpubParser.loadChapterImage(File(it.filePath), zipEntryPath) }
+        if (bmp != null) {
+          _epubImageCache.update { current ->
+            val updated = LinkedHashMap<String, Bitmap>(current.size + 1)
+            current.forEach { (k, v) -> updated[k] = v }
+            updated[zipEntryPath] = bmp
+            val maxEntries = 28
+            if (updated.size > maxEntries) {
+              val iter = updated.entries.iterator()
+              while (iter.hasNext() && updated.size > maxEntries) {
+                val entry = iter.next()
+                val isCover = !coverZip.isNullOrBlank() && entry.key.equals(coverZip, ignoreCase = true)
+                if (!isCover && entry.key != zipEntryPath) {
+                  iter.remove()
+                }
+              }
+            }
+            updated
+          }
+        }
+      } finally {
+        inFlightImageLoads.remove(zipEntryPath)
       }
     }
   }
@@ -1012,12 +1103,14 @@ class ReaderViewModel(
   }
 
   fun onReaderStopped() {
+    flushPendingProgressNow()
     backgroundNotificationScope.launch {
       ResumeReadingScheduler.scheduleForBook(appContext, bookId)
     }
   }
 
   fun onExitReaderNormally() {
+    flushPendingProgressNow()
     ttsController.pause()
     autoScrollingFlow.value = false
     sleepTimerJob?.cancel()
@@ -1106,6 +1199,7 @@ class ReaderViewModel(
   }
 
   override fun onCleared() {
+    flushPendingProgressNow()
     readingTimerJob?.cancel()
     sleepTimerJob?.cancel()
     prefetchJob?.cancel()

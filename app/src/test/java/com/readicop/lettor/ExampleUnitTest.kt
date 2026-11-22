@@ -1,11 +1,17 @@
 package com.readicop.lettor
 
+import androidx.compose.ui.text.AnnotatedString
+import com.readicop.lettor.domain.engine.EpubBlock
+import com.readicop.lettor.ui.reader.EpubCharPosition
 import com.readicop.lettor.ui.reader.EpubScreenTapZone
 import com.readicop.lettor.ui.reader.EpubTapOutcome
+import com.readicop.lettor.ui.reader.EpubTextSelection
+import com.readicop.lettor.ui.reader.extractSelectedEpubText
 import com.readicop.lettor.ui.reader.resolveChapterAndSubPageForGlobalPage
 import com.readicop.lettor.ui.reader.resolveEpubScreenTapZone
 import com.readicop.lettor.ui.reader.resolveEpubTapOutcome
 import com.readicop.lettor.ui.reader.resolveGlobalPageFromChapterCounts
+import com.readicop.lettor.ui.reader.snapEpubSelectionToWord
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -67,5 +73,42 @@ class ExampleUnitTest {
     }
     assertEquals(3 to 4, resolveChapterAndSubPageForGlobalPage(counts, 999))
     assertEquals(0 to 0, resolveChapterAndSubPageForGlobalPage(counts, -3))
+  }
+
+  @Test
+  fun epubSnapToWordReducesMultiWordOrParagraphSelectionToSingleWord() {
+    val p1 = "Hola mundo literario desde Lettor"
+    val p2 = "Segundo párrafo de prueba"
+    val blocks = listOf(
+      EpubBlock.Paragraph(content = AnnotatedString(p1), plainText = p1),
+      EpubBlock.Paragraph(content = AnnotatedString(p2), plainText = p2)
+    )
+    // Partial/multi-word selection starting inside "mundo" and spanning across block 1
+    val multiSelection = EpubTextSelection(
+      chapterIndex = 0,
+      anchorA = EpubCharPosition(blockIndex = 0, charOffset = 6),
+      anchorB = EpubCharPosition(blockIndex = 1, charOffset = 7)
+    )
+    val snapped = snapEpubSelectionToWord(
+      blocks = blocks,
+      selection = multiSelection,
+      fallbackBlockIndex = 0,
+      chapterIndex = 0
+    )!!
+    assertEquals("mundo", extractSelectedEpubText(blocks, snapped))
+
+    // Leading whitespace inside selection skips forward to the next word
+    val whitespaceSelection = EpubTextSelection(
+      chapterIndex = 0,
+      anchorA = EpubCharPosition(blockIndex = 0, charOffset = 4),
+      anchorB = EpubCharPosition(blockIndex = 0, charOffset = 18)
+    )
+    val snappedAfterSpace = snapEpubSelectionToWord(
+      blocks = blocks,
+      selection = whitespaceSelection,
+      fallbackBlockIndex = 0,
+      chapterIndex = 0
+    )!!
+    assertEquals("mundo", extractSelectedEpubText(blocks, snappedAfterSpace))
   }
 }

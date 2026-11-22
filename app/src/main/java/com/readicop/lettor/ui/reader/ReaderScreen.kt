@@ -43,7 +43,6 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
@@ -109,7 +108,8 @@ private data class ActiveFragmentSelection(
   val endCharOffset: Int = -1,
   val text: String,
   val spokenIndex: Int?,
-  val hasSelection: Boolean
+  val hasSelection: Boolean,
+  val initialTab: Int = 0
 )
 
 internal fun resolveWindowBrightness(readerBrightness: Float): Float =
@@ -133,7 +133,6 @@ fun ReaderScreen(
   var showTocSheet by remember { mutableStateOf(false) }
   var tocInitialTab by remember { mutableIntStateOf(0) }
   var showSearchSheet by remember { mutableStateOf(false) }
-  var searchInitialTab by remember { mutableIntStateOf(0) }
   var showAddNoteDialog by remember { mutableStateOf(false) }
   var activeFragment by remember { mutableStateOf<ActiveFragmentSelection?>(null) }
   var currentVisibleBlockIndex by remember(uiState.book?.id, uiState.currentUnit) { mutableIntStateOf(0) }
@@ -427,7 +426,7 @@ fun ReaderScreen(
           },
           onJumpToChapterPage = viewModel::jumpToChapterPage,
           onToggleControls = { controlsVisible = !controlsVisible },
-          onOpenFragmentTools = { startBlk, endBlk, startChar, endChar, excerpt ->
+          onOpenFragmentTools = { startBlk, endBlk, startChar, endChar, excerpt, initialTab ->
             activeFragment = ActiveFragmentSelection(
               blockIndex = startBlk,
               endBlockIndex = endBlk,
@@ -435,7 +434,8 @@ fun ReaderScreen(
               endCharOffset = endChar,
               text = excerpt,
               spokenIndex = spokenMap[startBlk],
-              hasSelection = true
+              hasSelection = true,
+              initialTab = initialTab
             )
           },
           onCopyPlainText = copyPlainSelection,
@@ -681,17 +681,14 @@ fun ReaderScreen(
 
             if (uiState.book?.format == BookFormat.EPUB) {
               IconButton(
-                onClick = {
-                  searchInitialTab = 0
-                  showSearchSheet = true
-                },
+                onClick = { showSearchSheet = true },
                 modifier = Modifier
                   .minimumInteractiveComponentSize()
                   .testTag("reader_search_button")
               ) {
                 Icon(
                   imageVector = Icons.Default.Search,
-                  contentDescription = "Buscar o preguntar",
+                  contentDescription = "Buscar en el libro",
                   tint = surfaceColors.text
                 )
               }
@@ -835,20 +832,6 @@ fun ReaderScreen(
                   modifier = Modifier.testTag("quick_tool_summary")
                 )
               }
-              item {
-                FilterChip(
-                  selected = false,
-                  onClick = {
-                    searchInitialTab = 1
-                    showSearchSheet = true
-                  },
-                  leadingIcon = {
-                    Icon(Icons.Default.QuestionAnswer, contentDescription = null, modifier = Modifier.size(16.dp))
-                  },
-                  label = { Text("Preguntar") },
-                  modifier = Modifier.testTag("quick_tool_ask")
-                )
-              }
             }
 
             item {
@@ -863,41 +846,43 @@ fun ReaderScreen(
               )
             }
 
-            item {
-              val spokenMapForPosition = remember(uiState.contentState) {
-                val epub = uiState.contentState as? ReaderContentState.EpubReady
-                if (epub == null) emptyMap()
-                else buildMap<Int, Int> {
-                  var idx = 0
-                  epub.activeChapter.blocks.forEachIndexed { blockIdx, block ->
-                    val t = when (block) {
-                      is EpubBlock.Heading -> block.text
-                      is EpubBlock.Paragraph -> block.plainText
-                      is EpubBlock.Quote -> block.plainText
-                      is EpubBlock.Image -> ""
+            if (!isEpub) {
+              item {
+                val spokenMapForPosition = remember(uiState.contentState) {
+                  val epub = uiState.contentState as? ReaderContentState.EpubReady
+                  if (epub == null) emptyMap()
+                  else buildMap<Int, Int> {
+                    var idx = 0
+                    epub.activeChapter.blocks.forEachIndexed { blockIdx, block ->
+                      val t = when (block) {
+                        is EpubBlock.Heading -> block.text
+                        is EpubBlock.Paragraph -> block.plainText
+                        is EpubBlock.Quote -> block.plainText
+                        is EpubBlock.Image -> ""
+                      }
+                      if (t.isNotBlank()) put(blockIdx, idx++)
                     }
-                    if (t.isNotBlank()) put(blockIdx, idx++)
                   }
                 }
+                FilterChip(
+                  selected = false,
+                  onClick = {
+                    val selected = liveSelectionFragment
+                    activeFragment = selected ?: ActiveFragmentSelection(
+                      blockIndex = -1,
+                      text = "",
+                      spokenIndex = spokenMapForPosition[currentVisibleBlockIndex]
+                        ?: if (uiState.ttsState.isPlaying) uiState.ttsState.currentBlockIndex else 0,
+                      hasSelection = false
+                    )
+                  },
+                  leadingIcon = {
+                    Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
+                  },
+                  label = { Text("Herramientas") },
+                  modifier = Modifier.testTag("quick_tool_tools")
+                )
               }
-              FilterChip(
-                selected = false,
-                onClick = {
-                  val selected = liveSelectionFragment
-                  activeFragment = selected ?: ActiveFragmentSelection(
-                    blockIndex = -1,
-                    text = "",
-                    spokenIndex = spokenMapForPosition[currentVisibleBlockIndex]
-                      ?: if (uiState.ttsState.isPlaying) uiState.ttsState.currentBlockIndex else 0,
-                    hasSelection = false
-                  )
-                },
-                leadingIcon = {
-                  Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
-                },
-                label = { Text("Herramientas") },
-                modifier = Modifier.testTag("quick_tool_tools")
-              )
             }
 
             item {
@@ -1080,16 +1065,12 @@ fun ReaderScreen(
     )
   }
 
-  // Search & Preguntar al libro Sheet
+  // Search Sheet (EPUB)
   if (showSearchSheet && uiState.book?.format == BookFormat.EPUB) {
     ReaderSearchSheet(
-      initialTab = searchInitialTab,
       query = uiState.searchQuery,
       results = uiState.searchResults,
-      askQuestion = uiState.askQuestion,
-      bookAnswer = uiState.bookAnswer,
       onQueryChange = viewModel::updateSearchQuery,
-      onAskQuestion = viewModel::askBook,
       onSelectChapter = viewModel::jumpToUnit,
       onDismiss = { showSearchSheet = false }
     )
@@ -1103,6 +1084,7 @@ fun ReaderScreen(
       bookAuthor = book?.author.orEmpty(),
       fragmentText = frag.text,
       blockIndex = frag.blockIndex,
+      initialTab = frag.initialTab,
       hasHighlightableRange = frag.hasSelection && (frag.blockIndex >= 0 || (frag.startCharOffset >= 0 && frag.endCharOffset > frag.startCharOffset)),
       hasSelection = frag.hasSelection,
       onSaveHighlight = { note, color, isStickyOnly ->

@@ -34,11 +34,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -92,7 +89,6 @@ import com.readicop.lettor.data.preferences.OrientationLockMode
 import com.readicop.lettor.data.preferences.ReaderFont
 import com.readicop.lettor.data.preferences.ReaderPreferences
 import com.readicop.lettor.data.preferences.ReaderTheme
-import com.readicop.lettor.domain.engine.BookQuestionAnswer
 import com.readicop.lettor.domain.engine.EpubChapterStub
 import com.readicop.lettor.domain.engine.EpubSearchHit
 import com.readicop.lettor.domain.engine.PdfChapterOutlineItem
@@ -1078,22 +1074,15 @@ fun ReaderTocAndBookmarksSheet(
   }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReaderSearchSheet(
-  initialTab: Int = 0,
   query: String,
   results: List<EpubSearchHit>,
-  askQuestion: String,
-  bookAnswer: BookQuestionAnswer?,
   onQueryChange: (String) -> Unit,
-  onAskQuestion: (String) -> Unit,
   onSelectChapter: (Int) -> Unit,
   onDismiss: () -> Unit
 ) {
-  var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
-  var questionInput by remember(askQuestion) { mutableStateOf(askQuestion) }
-
   LettorModalBottomSheet(onDismissRequest = onDismiss) {
     Column(
       modifier = Modifier
@@ -1102,176 +1091,71 @@ fun ReaderSearchSheet(
         .padding(horizontal = 20.dp)
         .padding(bottom = 24.dp)
     ) {
-      TabRow(selectedTabIndex = selectedTab) {
-        Tab(
-          selected = selectedTab == 0,
-          onClick = { selectedTab = 0 },
-          text = { Text("Buscar en el libro") },
-          modifier = Modifier.testTag("search_tab_exact")
-        )
-        Tab(
-          selected = selectedTab == 1,
-          onClick = { selectedTab = 1 },
-          text = { Text("Preguntar al libro") },
-          modifier = Modifier.testTag("search_tab_ask")
-        )
-      }
+      Text(
+        text = "Buscar en el libro",
+        style = MaterialTheme.typography.headlineSmall.copy(fontFamily = PlayfairDisplayFamily),
+        modifier = Modifier.testTag("search_sheet_title")
+      )
 
       Spacer(Modifier.height(14.dp))
 
-      if (selectedTab == 0) {
-        OutlinedTextField(
-          value = query,
-          onValueChange = onQueryChange,
-          placeholder = { Text("Escribe una palabra o frase…") },
-          leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-          trailingIcon = {
-            if (query.isNotEmpty()) {
-              IconButton(onClick = { onQueryChange("") }) {
-                Icon(Icons.Default.Close, contentDescription = "Limpiar")
-              }
+      OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        placeholder = { Text("Escribe una palabra o frase…") },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+          if (query.isNotEmpty()) {
+            IconButton(onClick = { onQueryChange("") }) {
+              Icon(Icons.Default.Close, contentDescription = "Limpiar")
             }
-          },
-          singleLine = true,
-          shape = RoundedCornerShape(14.dp),
-          modifier = Modifier
-            .fillMaxWidth()
-            .testTag("reader_search_input")
+          }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .testTag("reader_search_input")
+      )
+      Spacer(Modifier.height(12.dp))
+
+      if (query.isBlank()) {
+        Text(
+          text = "Busca términos dentro de todos los capítulos de este EPUB.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(12.dp))
-
-        if (query.isBlank()) {
-          Text(
-            text = "Busca términos dentro de todos los capítulos de este EPUB.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-        } else if (results.isEmpty()) {
-          Text(
-            text = "Sin resultados para «$query».",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-        } else {
-          LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(results) { hit ->
-              Surface(
-                onClick = {
-                  onSelectChapter(hit.chapterIndex)
-                  onDismiss()
-                },
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                  Text(
-                    text = hit.chapterTitle,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                  )
-                  Spacer(Modifier.height(4.dp))
-                  Text(
-                    text = hit.snippet,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                  )
-                }
-              }
-            }
-          }
-        }
+      } else if (results.isEmpty()) {
+        Text(
+          text = "Sin resultados para «$query».",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
       } else {
-        // Preguntar al libro — local BM25 extractive search
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          OutlinedTextField(
-            value = questionInput,
-            onValueChange = { questionInput = it },
-            placeholder = { Text("Ej. ¿Qué ocurre con los molinos?") },
-            leadingIcon = { Icon(Icons.Default.QuestionAnswer, contentDescription = null) },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier
-              .weight(1f)
-              .testTag("ask_book_input")
-          )
-          Button(
-            onClick = { onAskQuestion(questionInput) },
-            enabled = questionInput.isNotBlank(),
-            modifier = Modifier.testTag("ask_book_submit")
-          ) {
-            Text("Consultar")
-          }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-          listOf("molinos", "caballero", "aventura", "historia").forEach { suggestion ->
-            AssistChip(
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          items(results) { hit ->
+            Surface(
               onClick = {
-                questionInput = suggestion
-                onAskQuestion(suggestion)
+                onSelectChapter(hit.chapterIndex)
+                onDismiss()
               },
-              label = { Text(suggestion) }
-            )
-          }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        if (bookAnswer == null) {
-          Text(
-            text = "Consulta cualquier personaje, escena o dato mediante búsqueda semántica local (100% sin servidores).",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-        } else {
-          LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item {
-              Surface(
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-              ) {
+              color = MaterialTheme.colorScheme.surfaceContainerLow,
+              shape = RoundedCornerShape(12.dp),
+              modifier = Modifier.fillMaxWidth()
+            ) {
+              Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                  text = bookAnswer.summaryAnswer,
-                  style = MaterialTheme.typography.bodyMedium.copy(fontFamily = LiterataFamily),
-                  modifier = Modifier.padding(14.dp)
+                  text = hit.chapterTitle,
+                  style = MaterialTheme.typography.labelLarge,
+                  color = MaterialTheme.colorScheme.primary
                 )
-              }
-            }
-            items(bookAnswer.passages) { passage ->
-              Surface(
-                onClick = {
-                  onSelectChapter(passage.chapterIndex)
-                  onDismiss()
-                },
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                  Text(
-                    text = passage.chapterTitle,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                  )
-                  Spacer(Modifier.height(4.dp))
-                  Text(
-                    text = "«${passage.passage}»",
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis
-                  )
-                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                  text = hit.snippet,
+                  style = MaterialTheme.typography.bodySmall,
+                  maxLines = 3,
+                  overflow = TextOverflow.Ellipsis
+                )
               }
             }
           }

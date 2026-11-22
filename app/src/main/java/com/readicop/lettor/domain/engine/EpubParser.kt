@@ -126,6 +126,17 @@ class LazyEpubSession(val file: File) : Closeable {
     return EpubDocument(metadata = metadata, chapters = chapters)
   }
 
+  private fun readImageBytes(zipEntryPath: String): ByteArray? = synchronized(this) {
+    if (isClosed) return null
+    val zip = zipFile ?: ZipFile(file).also { zipFile = it }
+    EpubParser.readZipEntryBytes(zip, zipEntryPath)
+  }
+
+  fun loadImage(zipEntryPath: String, maxDimension: Int = 1400): Bitmap? {
+    val bytes = readImageBytes(zipEntryPath) ?: return null
+    return EpubParser.decodeImageBytes(bytes, maxDimension)
+  }
+
   @Synchronized
   override fun close() {
     isClosed = true
@@ -255,19 +266,35 @@ object EpubParser {
     }
   }
 
+  internal fun readZipEntryBytes(zip: ZipFile, zipEntryPath: String): ByteArray? {
+    val entry = findZipEntryCaseInsensitive(zip, zipEntryPath) ?: return null
+    return runCatching {
+      zip.getInputStream(entry).use { it.readBytes() }
+    }.getOrNull()
+  }
+
+  internal fun decodeImageBytes(bytes: ByteArray, maxDimension: Int = 1400): Bitmap? {
+    return runCatching {
+      val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+      BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
+      if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return@runCatching null
+      var sampleSize = 1
+      while (boundsOpts.outWidth / sampleSize > maxDimension || boundsOpts.outHeight / sampleSize > maxDimension) {
+        sampleSize *= 2
+      }
+      val decodeOpts = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.RGB_565
+      }
+      BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+    }.getOrNull()
+  }
+
   fun loadChapterImage(epubFile: File, zipEntryPath: String, maxDimension: Int = 1400): Bitmap? {
     return runCatching {
       ZipFile(epubFile).use { zip ->
-        val entry = findZipEntryCaseInsensitive(zip, zipEntryPath) ?: return@use null
-        val bytes = zip.getInputStream(entry).use { it.readBytes() }
-        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
-        var sampleSize = 1
-        while (boundsOpts.outWidth / sampleSize > maxDimension || boundsOpts.outHeight / sampleSize > maxDimension) {
-          sampleSize *= 2
-        }
-        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+        val bytes = readZipEntryBytes(zip, zipEntryPath) ?: return@use null
+        decodeImageBytes(bytes, maxDimension)
       }
     }.getOrNull()
   }

@@ -18,6 +18,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FormatAlignLeft
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -99,7 +107,10 @@ private enum class SelectionCanvasIconType {
   COPY,
   PARAGRAPH,
   HIGHLIGHT,
-  SHARE
+  SHARE,
+  TRANSLATE,
+  DICTIONARY,
+  MORE_MENU
 }
 
 @Composable
@@ -116,6 +127,7 @@ fun ReaderSelectionOverlay(
   copyEnabled: Boolean,
   highlightEnabled: Boolean,
   handleShape: SelectionHandleShape = SelectionHandleShape.DOT,
+  useEpubExtendedMenu: Boolean = false,
   onDragAnchorA: (Offset) -> Unit,
   onDragAnchorB: (Offset) -> Unit,
   onDragFinished: () -> Unit = {},
@@ -123,6 +135,9 @@ fun ReaderSelectionOverlay(
   onSelectParagraph: () -> Unit,
   onHighlight: () -> Unit,
   onShare: () -> Unit,
+  onTranslate: () -> Unit = {},
+  onDictionary: () -> Unit = {},
+  onSelectWord: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   if (containerSize.width <= 0 || containerSize.height <= 0) return
@@ -195,10 +210,14 @@ fun ReaderSelectionOverlay(
           surfaceColors = surfaceColors,
           copyEnabled = copyEnabled,
           highlightEnabled = highlightEnabled,
+          useEpubExtendedMenu = useEpubExtendedMenu,
           onCopyPlain = onCopyPlain,
           onSelectParagraph = onSelectParagraph,
           onHighlight = onHighlight,
-          onShare = onShare
+          onShare = onShare,
+          onTranslate = onTranslate,
+          onDictionary = onDictionary,
+          onSelectWord = onSelectWord
         )
       }
     }
@@ -365,13 +384,18 @@ private fun SelectionFloatingMenu(
   surfaceColors: ReaderSurfaceColors,
   copyEnabled: Boolean,
   highlightEnabled: Boolean,
+  useEpubExtendedMenu: Boolean,
   onCopyPlain: () -> Unit,
   onSelectParagraph: () -> Unit,
   onHighlight: () -> Unit,
-  onShare: () -> Unit
+  onShare: () -> Unit,
+  onTranslate: () -> Unit,
+  onDictionary: () -> Unit,
+  onSelectWord: () -> Unit
 ) {
   val density = LocalDensity.current
   var menuSize by remember { mutableStateOf(IntSize.Zero) }
+  var moreMenuExpanded by remember { mutableStateOf(false) }
 
   val edgeMarginPx = with(density) { 10.dp.toPx() }
   val selectionGapPx = with(density) { 12.dp.toPx() }
@@ -432,41 +456,168 @@ private fun SelectionFloatingMenu(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-      SelectionCanvasMenuButton(
-        label = "Copiar",
-        iconType = SelectionCanvasIconType.COPY,
-        enabled = copyEnabled,
-        surfaceColors = surfaceColors,
-        testTag = "selection_action_copy",
-        onClick = onCopyPlain
-      )
-      SelectionCanvasDivider(surfaceColors.divider)
-      SelectionCanvasMenuButton(
-        label = "Párrafo",
-        iconType = SelectionCanvasIconType.PARAGRAPH,
-        enabled = copyEnabled,
-        surfaceColors = surfaceColors,
-        testTag = "selection_action_paragraph",
-        onClick = onSelectParagraph
-      )
-      SelectionCanvasDivider(surfaceColors.divider)
-      SelectionCanvasMenuButton(
-        label = "Resaltar",
-        iconType = SelectionCanvasIconType.HIGHLIGHT,
-        enabled = highlightEnabled,
-        surfaceColors = surfaceColors,
-        testTag = "selection_action_highlight",
-        onClick = onHighlight
-      )
-      SelectionCanvasDivider(surfaceColors.divider)
-      SelectionCanvasMenuButton(
-        label = "Compartir",
-        iconType = SelectionCanvasIconType.SHARE,
-        enabled = copyEnabled,
-        surfaceColors = surfaceColors,
-        testTag = "selection_action_share",
-        onClick = onShare
-      )
+      if (useEpubExtendedMenu) {
+        SelectionCanvasMenuButton(
+          label = "Copiar",
+          iconType = SelectionCanvasIconType.COPY,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          minButtonWidthDp = 48,
+          horizontalPaddingDp = 6,
+          testTag = "selection_action_copy",
+          onClick = {
+            moreMenuExpanded = false
+            onCopyPlain()
+          }
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Traducir",
+          iconType = SelectionCanvasIconType.TRANSLATE,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          minButtonWidthDp = 48,
+          horizontalPaddingDp = 6,
+          testTag = "selection_action_translate",
+          onClick = {
+            moreMenuExpanded = false
+            onTranslate()
+          }
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Resaltar",
+          iconType = SelectionCanvasIconType.HIGHLIGHT,
+          enabled = highlightEnabled,
+          surfaceColors = surfaceColors,
+          minButtonWidthDp = 48,
+          horizontalPaddingDp = 6,
+          testTag = "selection_action_highlight",
+          onClick = {
+            moreMenuExpanded = false
+            onHighlight()
+          }
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Diccionario",
+          iconType = SelectionCanvasIconType.DICTIONARY,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          minButtonWidthDp = 48,
+          horizontalPaddingDp = 6,
+          testTag = "selection_action_dictionary",
+          onClick = {
+            moreMenuExpanded = false
+            onDictionary()
+          }
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        Box {
+          SelectionCanvasMenuButton(
+            label = null,
+            accessibilityLabel = "Más opciones",
+            iconType = SelectionCanvasIconType.MORE_MENU,
+            enabled = copyEnabled,
+            surfaceColors = surfaceColors,
+            minButtonWidthDp = 48,
+            horizontalPaddingDp = 6,
+            testTag = "selection_action_more",
+            onClick = { moreMenuExpanded = !moreMenuExpanded }
+          )
+          DropdownMenu(
+            expanded = moreMenuExpanded,
+            onDismissRequest = { moreMenuExpanded = false },
+            containerColor = surfaceColors.surface,
+            modifier = Modifier.testTag("selection_more_dropdown")
+          ) {
+            DropdownMenuItem(
+              text = { Text("Palabras", color = surfaceColors.text) },
+              leadingIcon = {
+                Icon(
+                  imageVector = Icons.Default.TextFields,
+                  contentDescription = null,
+                  tint = surfaceColors.text
+                )
+              },
+              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              onClick = {
+                moreMenuExpanded = false
+                onSelectWord()
+              },
+              modifier = Modifier.testTag("selection_menu_item_words")
+            )
+            DropdownMenuItem(
+              text = { Text("Compartir", color = surfaceColors.text) },
+              leadingIcon = {
+                Icon(
+                  imageVector = Icons.Default.Share,
+                  contentDescription = null,
+                  tint = surfaceColors.text
+                )
+              },
+              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              onClick = {
+                moreMenuExpanded = false
+                onShare()
+              },
+              modifier = Modifier.testTag("selection_menu_item_share")
+            )
+            DropdownMenuItem(
+              text = { Text("Párrafo", color = surfaceColors.text) },
+              leadingIcon = {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Filled.FormatAlignLeft,
+                  contentDescription = null,
+                  tint = surfaceColors.text
+                )
+              },
+              colors = MenuDefaults.itemColors(textColor = surfaceColors.text),
+              onClick = {
+                moreMenuExpanded = false
+                onSelectParagraph()
+              },
+              modifier = Modifier.testTag("selection_menu_item_paragraph")
+            )
+          }
+        }
+      } else {
+        SelectionCanvasMenuButton(
+          label = "Copiar",
+          iconType = SelectionCanvasIconType.COPY,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          testTag = "selection_action_copy",
+          onClick = onCopyPlain
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Párrafo",
+          iconType = SelectionCanvasIconType.PARAGRAPH,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          testTag = "selection_action_paragraph",
+          onClick = onSelectParagraph
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Resaltar",
+          iconType = SelectionCanvasIconType.HIGHLIGHT,
+          enabled = highlightEnabled,
+          surfaceColors = surfaceColors,
+          testTag = "selection_action_highlight",
+          onClick = onHighlight
+        )
+        SelectionCanvasDivider(surfaceColors.divider)
+        SelectionCanvasMenuButton(
+          label = "Compartir",
+          iconType = SelectionCanvasIconType.SHARE,
+          enabled = copyEnabled,
+          surfaceColors = surfaceColors,
+          testTag = "selection_action_share",
+          onClick = onShare
+        )
+      }
     }
   }
 }
@@ -483,11 +634,14 @@ private fun SelectionCanvasDivider(color: Color) {
 
 @Composable
 private fun SelectionCanvasMenuButton(
-  label: String,
+  label: String?,
   iconType: SelectionCanvasIconType,
   enabled: Boolean,
   surfaceColors: ReaderSurfaceColors,
   testTag: String,
+  accessibilityLabel: String = label.orEmpty(),
+  minButtonWidthDp: Int = 56,
+  horizontalPaddingDp: Int = 8,
   onClick: () -> Unit
 ) {
   val iconTint = surfaceColors.text
@@ -497,7 +651,7 @@ private fun SelectionCanvasMenuButton(
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.Center,
     modifier = Modifier
-      .widthIn(min = 56.dp)
+      .widthIn(min = minButtonWidthDp.dp)
       .height(48.dp)
       .clip(RoundedCornerShape(12.dp))
       .then(
@@ -508,9 +662,9 @@ private fun SelectionCanvasMenuButton(
         }
       )
       .alpha(if (enabled) 1f else 0.34f)
-      .padding(horizontal = 8.dp, vertical = 4.dp)
+      .padding(horizontal = horizontalPaddingDp.dp, vertical = 4.dp)
       .semantics {
-        contentDescription = label
+        contentDescription = accessibilityLabel
         if (!enabled) disabled()
       }
       .testTag(testTag)
@@ -652,18 +806,114 @@ private fun SelectionCanvasMenuButton(
           }
           drawPath(tray, color = iconTint, style = stroke)
         }
+
+        SelectionCanvasIconType.TRANSLATE -> {
+          // Two overlapping language cards with bidirectional translation arrow
+          drawRoundRect(
+            color = iconTint,
+            topLeft = Offset(w * 0.12f, h * 0.14f),
+            size = Size(w * 0.44f, h * 0.44f),
+            cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+            style = stroke
+          )
+          drawRoundRect(
+            color = accentTint,
+            topLeft = Offset(w * 0.44f, h * 0.42f),
+            size = Size(w * 0.44f, h * 0.44f),
+            cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+            style = stroke
+          )
+          // Stylized 'A' inside front-top card
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.24f, h * 0.46f),
+            end = Offset(w * 0.34f, h * 0.24f),
+            strokeWidth = strokePx * 0.85f,
+            cap = StrokeCap.Round
+          )
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.34f, h * 0.24f),
+            end = Offset(w * 0.44f, h * 0.46f),
+            strokeWidth = strokePx * 0.85f,
+            cap = StrokeCap.Round
+          )
+          // Accent line inside second card
+          drawLine(
+            color = accentTint,
+            start = Offset(w * 0.56f, h * 0.64f),
+            end = Offset(w * 0.76f, h * 0.64f),
+            strokeWidth = strokePx * 0.9f,
+            cap = StrokeCap.Round
+          )
+        }
+
+        SelectionCanvasIconType.DICTIONARY -> {
+          // Open editorial book + accent spine/bookmark line
+          val leftPage = Path().apply {
+            moveTo(w * 0.50f, h * 0.26f)
+            quadraticTo(w * 0.31f, h * 0.16f, w * 0.12f, h * 0.24f)
+            lineTo(w * 0.12f, h * 0.78f)
+            quadraticTo(w * 0.31f, h * 0.70f, w * 0.50f, h * 0.80f)
+            close()
+          }
+          val rightPage = Path().apply {
+            moveTo(w * 0.50f, h * 0.26f)
+            quadraticTo(w * 0.69f, h * 0.16f, w * 0.88f, h * 0.24f)
+            lineTo(w * 0.88f, h * 0.78f)
+            quadraticTo(w * 0.69f, h * 0.70f, w * 0.50f, h * 0.80f)
+            close()
+          }
+          drawPath(leftPage, color = iconTint, style = stroke)
+          drawPath(rightPage, color = iconTint, style = stroke)
+          drawLine(
+            color = accentTint,
+            start = Offset(w * 0.50f, h * 0.26f),
+            end = Offset(w * 0.50f, h * 0.80f),
+            strokeWidth = strokePx,
+            cap = StrokeCap.Round
+          )
+        }
+
+        SelectionCanvasIconType.MORE_MENU -> {
+          // Three clean horizontal bars ("3 rayas")
+          val barStroke = 1.9.dp.toPx()
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.16f, h * 0.26f),
+            end = Offset(w * 0.84f, h * 0.26f),
+            strokeWidth = barStroke,
+            cap = StrokeCap.Round
+          )
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.16f, h * 0.50f),
+            end = Offset(w * 0.84f, h * 0.50f),
+            strokeWidth = barStroke,
+            cap = StrokeCap.Round
+          )
+          drawLine(
+            color = iconTint,
+            start = Offset(w * 0.16f, h * 0.74f),
+            end = Offset(w * 0.84f, h * 0.74f),
+            strokeWidth = barStroke,
+            cap = StrokeCap.Round
+          )
+        }
       }
     }
 
-    Spacer(Modifier.height(2.dp))
-    Text(
-      text = label,
-      fontSize = 10.sp,
-      lineHeight = 12.sp,
-      fontWeight = FontWeight.Medium,
-      color = surfaceColors.text,
-      maxLines = 1,
-      overflow = TextOverflow.Clip
-    )
+    if (!label.isNullOrBlank()) {
+      Spacer(Modifier.height(2.dp))
+      Text(
+        text = label,
+        fontSize = 10.sp,
+        lineHeight = 12.sp,
+        fontWeight = FontWeight.Medium,
+        color = surfaceColors.text,
+        maxLines = 1,
+        overflow = TextOverflow.Clip
+      )
+    }
   }
 }
