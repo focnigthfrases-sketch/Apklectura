@@ -772,11 +772,25 @@ fun ReaderScreen(
 
       val unitNoun = "Página"
       var isDraggingSlider by remember { mutableStateOf(false) }
+      var pendingSliderJumpTarget by remember(uiState.book?.id) { mutableStateOf<Int?>(null) }
       var sliderValue by remember { mutableFloatStateOf(activeSliderUnit.toFloat()) }
-      LaunchedEffect(activeSliderUnit, totalUnits, isDraggingSlider) {
-        if (!isDraggingSlider) {
-          sliderValue = activeSliderUnit.toFloat().coerceIn(0f, (totalUnits - 1).coerceAtLeast(0).toFloat())
+      LaunchedEffect(pendingSliderJumpTarget) {
+        if (pendingSliderJumpTarget != null) {
+          kotlinx.coroutines.delay(450L)
+          pendingSliderJumpTarget = null
         }
+      }
+      LaunchedEffect(activeSliderUnit, totalUnits, isDraggingSlider, pendingSliderJumpTarget) {
+        if (isDraggingSlider) return@LaunchedEffect
+        val pending = pendingSliderJumpTarget
+        if (pending != null) {
+          if (activeSliderUnit == pending) {
+            pendingSliderJumpTarget = null
+          } else {
+            return@LaunchedEffect
+          }
+        }
+        sliderValue = activeSliderUnit.toFloat().coerceIn(0f, (totalUnits - 1).coerceAtLeast(0).toFloat())
       }
 
       Surface(
@@ -917,7 +931,11 @@ fun ReaderScreen(
               verticalAlignment = Alignment.CenterVertically
             ) {
               Text(
-                text = "$unitNoun ${displayIndex + 1} de $totalUnits",
+                text = if (isEpub) {
+                  "${displayIndex + 1} > $totalUnits"
+                } else {
+                  "$unitNoun ${displayIndex + 1} de $totalUnits"
+                },
                 style = MaterialTheme.typography.labelMedium.copy(
                   fontFamily = JetBrainsMonoFamily,
                   fontWeight = FontWeight.Medium
@@ -940,6 +958,7 @@ fun ReaderScreen(
               IconButton(
                 onClick = {
                   if (uiState.currentUnit > 0) {
+                    pendingSliderJumpTarget = null
                     viewModel.jumpToUnit(uiState.currentUnit - 1)
                   }
                 },
@@ -958,11 +977,14 @@ fun ReaderScreen(
                   value = sliderValue.coerceIn(0f, (totalUnits - 1).toFloat()),
                   onValueChange = {
                     isDraggingSlider = true
+                    pendingSliderJumpTarget = null
                     sliderValue = it
                   },
                   onValueChangeFinished = {
-                    isDraggingSlider = false
                     val target = sliderValue.roundToInt().coerceIn(0, totalUnits - 1)
+                    sliderValue = target.toFloat()
+                    pendingSliderJumpTarget = target
+                    isDraggingSlider = false
                     if (isEpub) {
                       epubGlobalPageJumpCounter += 1L
                       epubGlobalPageJumpRequest = epubGlobalPageJumpCounter to target
@@ -984,6 +1006,7 @@ fun ReaderScreen(
               IconButton(
                 onClick = {
                   if (uiState.currentUnit < arrowTotalUnits - 1) {
+                    pendingSliderJumpTarget = null
                     viewModel.jumpToUnit(uiState.currentUnit + 1)
                   }
                 },

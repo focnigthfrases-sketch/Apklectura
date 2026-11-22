@@ -63,17 +63,21 @@ fun LettorThinSlider(
   enabled: Boolean = true,
   modifier: Modifier = Modifier
 ) {
+  var isDragging by remember { mutableStateOf(false) }
+  var localDragValue by remember { mutableStateOf(value) }
+  val effectiveValue = if (isDragging) localDragValue else value
+
   val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(1e-5f)
-  val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+  val fraction = ((effectiveValue - valueRange.start) / span).coerceIn(0f, 1f)
 
   val latestOnValueChange by rememberUpdatedState(onValueChange)
   val latestOnFinished by rememberUpdatedState(onValueChangeFinished)
   val latestRange by rememberUpdatedState(valueRange)
   val latestSteps by rememberUpdatedState(steps)
-  var isDragging by remember { mutableStateOf(false) }
 
   val density = LocalDensity.current
   val thumbPadPx = with(density) { 8.dp.toPx() }
+  val latestThumbPadPx by rememberUpdatedState(thumbPadPx)
 
   Box(
     modifier = modifier
@@ -81,7 +85,7 @@ fun LettorThinSlider(
       .height(48.dp)
       .semantics {
         progressBarRangeInfo = ProgressBarRangeInfo(
-          current = value.coerceIn(valueRange.start, valueRange.endInclusive),
+          current = effectiveValue.coerceIn(valueRange.start, valueRange.endInclusive),
           range = valueRange,
           steps = steps
         )
@@ -96,39 +100,60 @@ fun LettorThinSlider(
       }
       .then(
         if (enabled) {
-          Modifier
-            .pointerInput(valueRange, steps) {
-              detectTapGestures { offset ->
-                val usableW = (size.width - thumbPadPx * 2f).coerceAtLeast(1f)
-                val f = (offset.x - thumbPadPx) / usableW
-                latestOnValueChange(snapValueToRange(f, latestRange, latestSteps))
-                latestOnFinished?.invoke()
+          Modifier.pointerInput(enabled) {
+            val touchSlop = viewConfiguration.touchSlop
+            awaitEachGesture {
+              val down = awaitFirstDown(requireUnconsumed = false)
+              val startPos = down.position
+              var dragStarted = false
+              var finishedInvoked = false
+
+              fun computeAtX(x: Float): Float {
+                val usableW = (size.width - latestThumbPadPx * 2f).coerceAtLeast(1f)
+                val f = (x - latestThumbPadPx) / usableW
+                return snapValueToRange(f, latestRange, latestSteps)
+              }
+
+              var lastEmitted = Float.NaN
+              try {
+                while (true) {
+                  val event = awaitPointerEvent()
+                  val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                  if (!change.pressed) {
+                    val finalVal = computeAtX(change.position.x)
+                    localDragValue = finalVal
+                    isDragging = false
+                    if ((!dragStarted && !change.isConsumed) || finalVal != lastEmitted) {
+                      lastEmitted = finalVal
+                      latestOnValueChange(finalVal)
+                    }
+                    finishedInvoked = true
+                    latestOnFinished?.invoke()
+                    break
+                  }
+                  val dx = change.position.x - startPos.x
+                  if (!dragStarted && abs(dx) > touchSlop * 0.5f) {
+                    dragStarted = true
+                    isDragging = true
+                  }
+                  if (dragStarted) {
+                    change.consume()
+                    val nextVal = computeAtX(change.position.x)
+                    localDragValue = nextVal
+                    if (nextVal != lastEmitted) {
+                      lastEmitted = nextVal
+                      latestOnValueChange(nextVal)
+                    }
+                  }
+                }
+              } finally {
+                isDragging = false
+                if (dragStarted && !finishedInvoked) {
+                  latestOnFinished?.invoke()
+                }
               }
             }
-            .pointerInput(valueRange, steps) {
-              detectHorizontalDragGestures(
-                onDragStart = { offset ->
-                  isDragging = true
-                  val usableW = (size.width - thumbPadPx * 2f).coerceAtLeast(1f)
-                  val f = (offset.x - thumbPadPx) / usableW
-                  latestOnValueChange(snapValueToRange(f, latestRange, latestSteps))
-                },
-                onDragEnd = {
-                  isDragging = false
-                  latestOnFinished?.invoke()
-                },
-                onDragCancel = {
-                  isDragging = false
-                  latestOnFinished?.invoke()
-                },
-                onHorizontalDrag = { change, _ ->
-                  change.consume()
-                  val usableW = (size.width - thumbPadPx * 2f).coerceAtLeast(1f)
-                  val f = (change.position.x - thumbPadPx) / usableW
-                  latestOnValueChange(snapValueToRange(f, latestRange, latestSteps))
-                }
-              )
-            }
+          }
         } else {
           Modifier
         }

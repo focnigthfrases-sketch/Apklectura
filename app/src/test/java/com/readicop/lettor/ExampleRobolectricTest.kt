@@ -2437,37 +2437,41 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `epub screen tap zone uses centered circle and left right page turn outside circle`() {
+  fun `epub screen tap zone uses tall centered vertical rectangle excluding top and bottom bands`() {
     val width = 1000f
     val height = 2000f
-    val radius = 150f // center at (500, 1000)
+    val halfWidth = 150f // center X = 500 (350..650), Y in 16%..84% (320..1680)
 
-    // Dead center and inside circle perimeter -> CENTER_CIRCLE
+    // Dead center and upper/lower middle inside vertical rectangle -> CENTER_RECT
     assertEquals(
-      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(500f, 1000f, width, height, radius)
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_RECT,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(500f, 1000f, width, height, halfWidth)
     )
     assertEquals(
-      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(600f, 1060f, width, height, radius)
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_RECT,
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(600f, 450f, width, height, halfWidth)
     )
-    // Corner just outside circle on center vertical midline -> NOT inside circle (uses vertical distance too)
+    assertEquals(
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(420f, 1550f, width, height, halfWidth),
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_RECT
+    )
+    // Top and bottom margins along center column -> NOT inside vertical rectangle
     assertEquals(
       com.readicop.lettor.ui.reader.EpubScreenTapZone.PREVIOUS_PAGE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(450f, 600f, width, height, radius)
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(480f, 200f, width, height, halfWidth)
     )
     assertEquals(
       com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(550f, 1400f, width, height, radius)
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(520f, 1850f, width, height, halfWidth)
     )
-    // Left and right edges outside circle
+    // Left and right sides outside vertical rectangle
     assertEquals(
       com.readicop.lettor.ui.reader.EpubScreenTapZone.PREVIOUS_PAGE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(120f, 1000f, width, height, radius)
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(120f, 1000f, width, height, halfWidth)
     )
     assertEquals(
-      com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE,
-      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(880f, 1000f, width, height, radius)
+      com.readicop.lettor.ui.reader.resolveEpubScreenTapZone(880f, 1000f, width, height, halfWidth),
+      com.readicop.lettor.ui.reader.EpubScreenTapZone.NEXT_PAGE
     )
   }
 
@@ -2490,7 +2494,7 @@ class ExampleRobolectricTest {
     assertEquals(
       com.readicop.lettor.ui.reader.EpubTapOutcome.TOGGLE_CONTROLS,
       com.readicop.lettor.ui.reader.resolveEpubTapOutcome(
-        com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_CIRCLE,
+        com.readicop.lettor.ui.reader.EpubScreenTapZone.CENTER_RECT,
         controlsVisible = true
       )
     )

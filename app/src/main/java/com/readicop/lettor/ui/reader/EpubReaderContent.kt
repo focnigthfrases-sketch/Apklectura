@@ -140,7 +140,7 @@ internal fun resolveEpubHorizontalTapAction(
 }
 
 internal enum class EpubScreenTapZone {
-  CENTER_CIRCLE,
+  CENTER_RECT,
   PREVIOUS_PAGE,
   NEXT_PAGE
 }
@@ -152,7 +152,10 @@ internal enum class EpubTapOutcome {
   NEXT_PAGE
 }
 
-internal fun computeEpubCenterCircleRadiusPx(
+internal const val EPUB_CENTER_RECT_MIN_Y_FRACTION = 0.16f
+internal const val EPUB_CENTER_RECT_MAX_Y_FRACTION = 0.84f
+
+internal fun computeEpubCenterRectHalfWidthPx(
   containerWidthPx: Float,
   containerHeightPx: Float
 ): Float {
@@ -160,13 +163,13 @@ internal fun computeEpubCenterCircleRadiusPx(
   return (minDim * 0.17f).coerceAtLeast(1f)
 }
 
-private fun computeUiCenterCircleRadiusPx(
+private fun computeUiCenterRectHalfWidthPx(
   containerWidthPx: Float,
   containerHeightPx: Float,
   density: androidx.compose.ui.unit.Density
 ): Float {
-  val proportional = computeEpubCenterCircleRadiusPx(containerWidthPx, containerHeightPx)
-  val minPx = with(density) { 56.dp.toPx() }
+  val proportional = computeEpubCenterRectHalfWidthPx(containerWidthPx, containerHeightPx)
+  val minPx = with(density) { 48.dp.toPx() }
   val maxPx = with(density) { 92.dp.toPx() }
   return proportional.coerceIn(minPx, maxPx)
 }
@@ -176,18 +179,19 @@ internal fun resolveEpubScreenTapZone(
   tapY: Float,
   containerWidthPx: Float,
   containerHeightPx: Float,
-  circleRadiusPx: Float = computeEpubCenterCircleRadiusPx(containerWidthPx, containerHeightPx)
+  rectHalfWidthPx: Float = computeEpubCenterRectHalfWidthPx(containerWidthPx, containerHeightPx),
+  topFraction: Float = EPUB_CENTER_RECT_MIN_Y_FRACTION,
+  bottomFraction: Float = EPUB_CENTER_RECT_MAX_Y_FRACTION
 ): EpubScreenTapZone {
   if (containerWidthPx <= 0f || containerHeightPx <= 0f) {
-    return EpubScreenTapZone.CENTER_CIRCLE
+    return EpubScreenTapZone.CENTER_RECT
   }
   val cx = containerWidthPx * 0.5f
-  val cy = containerHeightPx * 0.5f
-  val dx = tapX - cx
-  val dy = tapY - cy
-  val safeRadius = circleRadiusPx.coerceAtLeast(1f)
-  if (dx * dx + dy * dy <= safeRadius * safeRadius) {
-    return EpubScreenTapZone.CENTER_CIRCLE
+  val safeHalfWidth = rectHalfWidthPx.coerceAtLeast(1f)
+  val minY = containerHeightPx * topFraction.coerceIn(0f, 0.49f)
+  val maxY = containerHeightPx * bottomFraction.coerceIn(0.51f, 1f)
+  if (abs(tapX - cx) <= safeHalfWidth && tapY in minY..maxY) {
+    return EpubScreenTapZone.CENTER_RECT
   }
   return if (tapX < cx) {
     EpubScreenTapZone.PREVIOUS_PAGE
@@ -201,14 +205,14 @@ internal fun resolveEpubTapOutcome(
   controlsVisible: Boolean
 ): EpubTapOutcome {
   if (controlsVisible) {
-    return if (zone == EpubScreenTapZone.CENTER_CIRCLE) {
+    return if (zone == EpubScreenTapZone.CENTER_RECT) {
       EpubTapOutcome.TOGGLE_CONTROLS
     } else {
       EpubTapOutcome.DISMISS_CONTROLS
     }
   }
   return when (zone) {
-    EpubScreenTapZone.CENTER_CIRCLE -> EpubTapOutcome.TOGGLE_CONTROLS
+    EpubScreenTapZone.CENTER_RECT -> EpubTapOutcome.TOGGLE_CONTROLS
     EpubScreenTapZone.PREVIOUS_PAGE -> EpubTapOutcome.PREVIOUS_PAGE
     EpubScreenTapZone.NEXT_PAGE -> EpubTapOutcome.NEXT_PAGE
   }
@@ -1160,7 +1164,7 @@ fun EpubReaderContent(
           val startPos = down.position
           val w = size.width.toFloat()
           val h = size.height.toFloat()
-          val circleR = computeUiCenterCircleRadiusPx(w, h, density)
+          val rectHalfWidth = computeUiCenterRectHalfWidthPx(w, h, density)
           var dismissedThisGesture = false
           while (true) {
             val event = awaitPointerEvent(pass = PointerEventPass.Initial)
@@ -1168,9 +1172,9 @@ fun EpubReaderContent(
             if (!change.pressed) break
             val dist = (change.position - startPos).getDistance()
             if (!dismissedThisGesture && dist > touchSlop) {
-              val startZone = resolveEpubScreenTapZone(startPos.x, startPos.y, w, h, circleR)
-              val curZone = resolveEpubScreenTapZone(change.position.x, change.position.y, w, h, circleR)
-              if (startZone != EpubScreenTapZone.CENTER_CIRCLE || curZone != EpubScreenTapZone.CENTER_CIRCLE) {
+              val startZone = resolveEpubScreenTapZone(startPos.x, startPos.y, w, h, rectHalfWidth)
+              val curZone = resolveEpubScreenTapZone(change.position.x, change.position.y, w, h, rectHalfWidth)
+              if (startZone != EpubScreenTapZone.CENTER_RECT || curZone != EpubScreenTapZone.CENTER_RECT) {
                 dismissedThisGesture = true
                 latestOnDismissControls()
               }
@@ -1234,29 +1238,25 @@ fun EpubReaderContent(
       }
     }
 
-    // Index remaining chapters in background without dropping frames
+    // Index remaining chapters in background without mid-scroll page-count jitter
     LaunchedEffect(bookKey, layoutKey, chapterStubs.size) {
-      var updated = false
+      val computedCounts = mutableMapOf<Int, Int>()
       for (chIdx in chapterStubs.indices) {
         if (!chapterPageCountsMap.containsKey(chIdx)) {
           val ch = latestLoadedChaptersMap[chIdx] ?: latestOnLoadChapterForPagination(chIdx)
           if (ch != null) {
-            chapterPageCountsMap[chIdx] = countChapterPages(ch)
-            updated = true
-            if (chIdx % 4 == 0) {
-              pageCountsRevision++
-              updated = false
-            }
+            computedCounts[chIdx] = countChapterPages(ch)
           }
           yield()
         }
       }
-      if (updated) {
+      if (computedCounts.isNotEmpty()) {
+        chapterPageCountsMap.putAll(computedCounts)
         pageCountsRevision++
       }
     }
 
-    val bookChapterPageCounts = remember(chapterStubs.size, pageCountsRevision, chapterPageCountsMap.size, layoutKey) {
+    val bookChapterPageCounts = remember(chapterStubs.size, pageCountsRevision, layoutKey) {
       List(chapterStubs.size.coerceAtLeast(1)) { idx ->
         (chapterPageCountsMap[idx] ?: 1).coerceAtLeast(1)
       }
@@ -1739,8 +1739,8 @@ private fun EpubPaginatedReader(
         }
         val localX = (rootOffset.x - overlayContainerPosInRoot.x).coerceIn(0f, containerWidthPx)
         val localY = (rootOffset.y - overlayContainerPosInRoot.y).coerceIn(0f, containerHeightPx)
-        val circleR = computeUiCenterCircleRadiusPx(containerWidthPx, containerHeightPx, density)
-        val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, circleR)
+        val rectHalfWidth = computeUiCenterRectHalfWidthPx(containerWidthPx, containerHeightPx, density)
+        val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, rectHalfWidth)
         when (resolveEpubTapOutcome(zone, latestControlsVisible)) {
           EpubTapOutcome.DISMISS_CONTROLS -> latestOnDismissControls()
           EpubTapOutcome.TOGGLE_CONTROLS -> latestOnToggleControls()
@@ -3124,6 +3124,11 @@ private fun EpubScrollReader(
         updated,
         computeOverallProgress(ch, updated.blockIndex, findVerticalEpubCoverImageBlock(ch, metadata) != null)
       )
+      val atEnd = !listState.canScrollForward && ch.index >= totalChapters - 1
+      latestOnVisiblePageStateChanged(
+        ch.index,
+        computeSubPageForVerticalPosition(ch, updated.blockIndex, updated.characterOffsetInBlock, atEnd)
+      )
     } else {
       pendingLayoutRestoreAnchor = null
       hasCompletedInitialLayout = true
@@ -3270,8 +3275,8 @@ private fun EpubScrollReader(
       val containerHeightPx = overlayContainerSize.height.toFloat().coerceAtLeast(1f)
       val localX = (rootOffset.x - overlayContainerPosInRoot.x).coerceIn(0f, containerWidthPx)
       val localY = (rootOffset.y - overlayContainerPosInRoot.y).coerceIn(0f, containerHeightPx)
-      val circleR = computeUiCenterCircleRadiusPx(containerWidthPx, containerHeightPx, density)
-      val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, circleR)
+      val rectHalfWidth = computeUiCenterRectHalfWidthPx(containerWidthPx, containerHeightPx, density)
+      val zone = resolveEpubScreenTapZone(localX, localY, containerWidthPx, containerHeightPx, rectHalfWidth)
       when (resolveEpubTapOutcome(zone, latestControlsVisible)) {
         EpubTapOutcome.DISMISS_CONTROLS -> latestOnDismissControls()
         EpubTapOutcome.TOGGLE_CONTROLS -> latestOnToggleControls()
